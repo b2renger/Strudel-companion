@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gray-50: var(--color-gray-50-override);
+  --color-gray-100: var(--color-gray-100-override);
+  --color-gray-200: var(--color-gray-200-override);
+  --color-gray-300: var(--color-gray-300-override);
+  --color-gray-400: var(--color-gray-400-override);
+  --color-gray-500: var(--color-gray-500-override);
+  --color-gray-600: var(--color-gray-600-override);
+  --color-gray-700: var(--color-gray-700-override);
+  --color-gray-800: var(--color-gray-800-override);
+  --color-gray-900: var(--color-gray-900-override);
+  --color-gray-950: var(--color-gray-950-override);
+    }
+
+:root {
+  /* Light mode (Neutral/Warm grays) */
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
+  --color-gray-950: #030712;
+  
+  --color-gray-50-override: var(--color-gray-50);
+  --color-gray-100-override: var(--color-gray-100);
+  --color-gray-200-override: var(--color-gray-200);
+  --color-gray-300-override: var(--color-gray-300);
+  --color-gray-400-override: var(--color-gray-400);
+  --color-gray-500-override: var(--color-gray-500);
+  --color-gray-600-override: var(--color-gray-600);
+  --color-gray-700-override: var(--color-gray-700);
+  --color-gray-800-override: var(--color-gray-800);
+  --color-gray-900-override: var(--color-gray-900);
+  --color-gray-950-override: var(--color-gray-950);
+  
+      
+  /* Hardcoded app colors mapped to variables */
+  --app-bg: #f6f4f0;
+  --app-card-1: #fcfaf7;
+  --app-card-2: #fbfaf8;
+  --app-card-3: #f9f8f6;
+  --app-border: #e6e2da;
+  --app-border-hover: #c5bcb0;
+}
+
+:root.dark {
+  /* Dark mode (Inverted mapping) */
+  --color-gray-50-override: #0a0a0a;
+  --color-gray-100-override: #121212;
+  --color-gray-200-override: #262626;
+  --color-gray-300-override: #404040;
+  --color-gray-400-override: #525252;
+  --color-gray-500-override: #737373;
+  --color-gray-600-override: #8c8c8c;
+  --color-gray-700-override: #a3a3a3;
+  --color-gray-800-override: #c2c2c2;
+  --color-gray-900-override: #d4d4d4;
+  --color-gray-950-override: #e5e5e5;
+  
+  --app-bg: #000000;
+  --app-card-1: #0f0f0f;
+  --app-card-2: #141414;
+  --app-card-3: #1a1a1a;
+  --app-border: #262626;
+  --app-border-hover: #404040;
+}
+
+@layer base {
+  body {
+    font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background-color: var(--app-bg);
+    color: var(--color-gray-900-override);
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--app-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-gray-300-override);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #db2777;
+}
+
+/* Slider */
+input[type=range] {
+  accent-color: #059669;
+}
+
+/* Flashy pulse glow utilities */
+.glow-mint {
+  box-shadow: 0 0 16px rgba(5,150,105, 0.35);
+}
+.glow-pink {
+  box-shadow: 0 0 16px rgba(219,39,119, 0.4);
+}
+.glow-beige {
+  box-shadow: 0 0 16px rgba(17,24,39, 0.1);
+}
