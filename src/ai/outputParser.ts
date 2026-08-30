@@ -267,8 +267,26 @@ function looksTruncated(rawText: string): boolean {
  * catch-all matched almost any English sentence, and is how a raw JSON blob
  * once ended up in the user's editor as code.
  */
-export function extractCodeBlock(text: string): string | null {
-  if (!text) return null;
+/**
+ * Removes a reasoning model's thinking block.
+ *
+ * Qwen3, DeepSeek-R1 distills and others emit `<think>…</think>` before the
+ * answer, and smaller models sometimes do it unprompted. Left in place it is
+ * prose containing brackets and quotes directly ahead of the real answer,
+ * which is the worst possible input for everything below.
+ */
+function stripReasoning(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // An unterminated block means the reply was cut off inside it: there is no
+    // answer after it to find.
+    .replace(/<think>[\s\S]*$/i, '');
+}
+
+export function extractCodeBlock(rawText: string): string | null {
+  if (!rawText) return null;
+  const text = stripReasoning(rawText);
+  if (!text.trim()) return null;
 
   const candidates: string[] = [];
 
@@ -354,7 +372,7 @@ function finalizeCode(code: string, label: string, raw: string): string {
 
 /** Read `LABEL: value` lines, ignoring anything inside the fenced block. */
 function readLabels(text: string): Map<string, string[]> {
-  const withoutCode = text.replace(/```[\s\S]*?```/g, '\n');
+  const withoutCode = stripReasoning(text).replace(/```[\s\S]*?```/g, '\n');
   const out = new Map<string, string[]>();
   for (const line of withoutCode.split('\n')) {
     const m = line.match(/^\s*([A-Z][A-Z_]{2,15}):\s*(.+?)\s*$/);

@@ -84,6 +84,54 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
     description: 'Very fast, follows output formats reliably for its size.',
   },
   {
+    id: 'gemma3-1b-it-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
+    name: 'Gemma 3 1B',
+    vramMB: 711,
+    needsF16: true,
+    contextWindow: 4096,
+    // Gemma's chat template has no system turn — the template folds system
+    // text into the first user message itself. Sending a system role can be
+    // rejected outright, so it goes in the user turn via `withSystemPrompt()`,
+    // which costs the same tokens either way.
+    supportsSystemRole: false,
+    description:
+      'Newer and smaller than Llama 3.2 1B, and the closest relative available here of the Gemma 3n that Google AI Edge Gallery runs on phones. A good first thing to try if generation feels slow.',
+  },
+  {
+    id: 'Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
+    name: 'Qwen 2.5 Coder 0.5B',
+    vramMB: 945,
+    needsF16: true,
+    contextWindow: 4096,
+    supportsSystemRole: true,
+    description:
+      'Half the parameters of the 1B models, so it decodes about twice as fast, and it is tuned on code rather than chat — which is what a Strudel pattern is. Worth trying when generations keep falling back.',
+  },
+  {
+    id: 'SmolLM2-360M-Instruct-q4f32_1-MLC',
+    promptStyle: 'compact' as const,
+    name: 'SmolLM2 360M (f32)',
+    vramMB: 580,
+    needsF16: false,
+    contextWindow: 4096,
+    supportsSystemRole: true,
+    description:
+      'By far the smallest option for a GPU without 16-bit shaders — most Android phones. Half the download of anything else that runs there and much faster, at the cost of simpler patterns.',
+  },
+  {
+    id: 'Qwen2.5-Coder-0.5B-Instruct-q4f32_1-MLC',
+    promptStyle: 'compact' as const,
+    name: 'Qwen 2.5 Coder 0.5B (f32)',
+    vramMB: 1060,
+    needsF16: false,
+    contextWindow: 4096,
+    supportsSystemRole: true,
+    description:
+      'For GPUs without 16-bit shaders. Slightly smaller than the f32 Llama and half its parameters, and tuned on code — the better Android choice unless you need the download to be small.',
+  },
+  {
     id: 'Llama-3.2-1B-Instruct-q4f32_1-MLC',
     promptStyle: 'compact' as const,
     name: 'Llama 3.2 1B (f32)',
@@ -131,6 +179,20 @@ export const DEFAULT_MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 
 export function getModelSpec(id: string): WebGPUModelSpec | undefined {
   return WEBGPU_MODELS.find((m) => m.id === id);
+}
+
+/**
+ * The smallest model this device can actually run.
+ *
+ * `DEFAULT_MODEL_ID` is chosen for a desktop. On a phone the default matters
+ * far more than it does anywhere else — decode is slow enough that model size
+ * is the difference between usable and not — and on a GPU without 16-bit
+ * shaders the desktop default cannot run at all.
+ */
+export function smallestModelFor(opts: { hasF16: boolean }): string {
+  const runnable = WEBGPU_MODELS.filter((m) => opts.hasF16 || !m.needsF16);
+  if (runnable.length === 0) return DEFAULT_MODEL_ID;
+  return runnable.reduce((a, b) => (b.vramMB < a.vramMB ? b : a)).id;
 }
 
 export function formatSize(mb: number): string {

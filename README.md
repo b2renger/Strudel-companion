@@ -172,6 +172,31 @@ ordinary visitors get a clean console. Errors are always shown.
 
 ---
 
+### Which local model to pick
+
+| | f16 GPUs (Apple, most desktops) | GPUs without f16 (most Android) |
+|---|---|---|
+| Smallest / fastest | SmolLM2 360M — 376 MB | SmolLM2 360M — 580 MB |
+| Best balance | **Gemma 3 1B — 711 MB** | Qwen 2.5 Coder 0.5B — 1060 MB |
+| Most capable | Gemma 2 2B — 1.9 GB (desktop) | Llama 3.2 1B — 1129 MB |
+
+If generation is slow or keeps falling back to the built-in rules, try a
+smaller model *and* a code-tuned one. Half the parameters roughly halves the
+time per token, and the Coder builds are trained on code rather than chat —
+which is what a Strudel pattern is. Fewer parameters do mean simpler patterns,
+so it is a genuine trade.
+
+**Gemma 3n (E2B/E4B) cannot be used here.** It is what Google AI Edge Gallery
+runs on Android, but it ships as a MediaPipe/LiteRT `.task` bundle for that
+runtime. This app uses WebGPU through MLC, which needs models compiled to that
+format, and no Gemma 3n build exists for it. Gemma 3 1B is the closest relative
+available, and it is smaller than the previous default.
+
+The engine picker measures your GPU and blocks what it cannot run, so the list
+you see is already filtered to what will actually load.
+
+---
+
 ## Device requirements for local models
 
 WebGPU support is not the same as being able to run a model, so the app probes

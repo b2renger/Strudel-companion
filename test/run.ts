@@ -53,6 +53,8 @@ import {
 } from '../src/ai/sanitizeCode.ts';
 import { completionIsDone } from '../src/ai/streamStop.ts';
 import { isTransientLoadError, describeLoadFailure } from '../src/ai/modelLoadErrors.ts';
+import { WEBGPU_MODELS, DEFAULT_MODEL_ID, smallestModelFor } from '../src/ai/models.ts';
+import { prebuiltAppConfig } from '@mlc-ai/web-llm';
 import { clamp } from '../src/engine/audioEngine.ts';
 import {
   buildHeuristicVariations,
@@ -1284,6 +1286,72 @@ test('a storage or device failure gets its own explanation', () => {
 
   const device = describeLoadFailure(new Error('Device does not support shader-f16'), 'model-x');
   assert.ok(device.includes('model-x'), 'a device failure should name the model');
+});
+
+test('every model we offer actually exists in web-llm', () => {
+  // A typo in a model id is not a soft failure: web-llm cannot find the model
+  // and the load dies after the user has already committed to a download.
+  const known = new Map(prebuiltAppConfig.model_list.map((m) => [m.model_id, m]));
+  for (const spec of WEBGPU_MODELS) {
+    assert.ok(known.has(spec.id), `unknown model id: ${spec.id}`);
+  }
+  assert.ok(known.has(DEFAULT_MODEL_ID), `unknown default model: ${DEFAULT_MODEL_ID}`);
+});
+
+test('our stated model sizes match what web-llm will actually download', () => {
+  // These drive the mobile ceiling and the storage check, so a wrong number
+  // means offering a phone a download it cannot finish.
+  const known = new Map(prebuiltAppConfig.model_list.map((m) => [m.model_id, m]));
+  for (const spec of WEBGPU_MODELS) {
+    const real = known.get(spec.id)?.vram_required_MB;
+    assert.ok(real, `${spec.id} has no vram_required_MB`);
+    assert.ok(
+      Math.abs(real! - spec.vramMB) <= 2,
+      `${spec.id}: catalogue says ${spec.vramMB} MB, web-llm says ${Math.round(real!)} MB`,
+    );
+  }
+});
+
+test('the f16 flag matches the build it names', () => {
+  // A q4f16_1 build cannot run without shader-f16. Getting this backwards
+  // either blocks a model that works or offers one that cannot start.
+  for (const spec of WEBGPU_MODELS) {
+    const isF16Build = /q4f16_1|q0f16/.test(spec.id);
+    assert.equal(spec.needsF16, isF16Build, `${spec.id}: needsF16 is wrong`);
+  }
+});
+
+test('a GPU without 16-bit shaders still has real choices', () => {
+  // Most Android phones are Qualcomm, which cannot provide shader-f16. This
+  // used to leave exactly one option, at 1129 MB.
+  const f32 = WEBGPU_MODELS.filter((m) => !m.needsF16).sort((a, b) => a.vramMB - b.vramMB);
+  assert.ok(f32.length >= 3, `only ${f32.length} model(s) run without f16`);
+  assert.ok(f32[0].vramMB <= 700, `the smallest f32 option is still ${f32[0].vramMB} MB`);
+
+  assert.equal(smallestModelFor({ hasF16: false }), f32[0].id);
+  assert.ok(!smallestModelFor({ hasF16: false }).includes('q4f16'));
+});
+
+test('smallestModelFor picks the smallest runnable model', () => {
+  const all = [...WEBGPU_MODELS].sort((a, b) => a.vramMB - b.vramMB);
+  assert.equal(smallestModelFor({ hasF16: true }), all[0].id);
+});
+
+test("a reasoning model's thinking block does not reach the parser", () => {
+  const F = '`' + '`' + '`';
+  const reply =
+    '<think>\nThe user wants techno. I could use bd*4 (four on the floor) or maybe\n' +
+    'note("c2 e2") — let me think about what "stack(" means here.\n</think>\n' +
+    `${F}strudel\nstack(\n  s("bd*4"),\n  s("hh*8")\n)\n${F}\nTITLE: Iron\nBPM: 130`;
+  const got = extractCodeBlock(reply);
+  assert.ok(got, 'nothing extracted past the thinking block');
+  assert.ok(!/think/i.test(got!), `the thinking block leaked in: ${got}`);
+  assert.ok(got!.includes('hh*8'));
+  assert.equal(parseGeneratedTrack(reply, 'x', 'Techno', 120).bpm, 130);
+});
+
+test('a reply cut off inside a thinking block yields nothing', () => {
+  assert.equal(extractCodeBlock('<think>\nLet me consider stack(s("bd*4"))  and'), null);
 });
 
 // ---------------------------------------------------------------------------

@@ -464,6 +464,22 @@ build if `sw.js` ever gains a route over the model hosts or a
 every shard again (a 900 MB model occupying ~1.8 GB), and putting a handler in
 front of the most fragile thing the app does has no upside.
 
+### The model catalogue is checked against web-llm, not typed from memory
+
+`WEBGPU_MODELS` is a hand-written subset of web-llm's 165 prebuilt models, and
+three of its fields will silently do damage if they drift: a wrong `id` fails
+the load only after the user has committed to a download, a wrong `vramMB`
+feeds the mobile ceiling and the storage gate, and a wrong `needsF16` either
+hides a model that works or offers one that cannot start.
+
+Tests assert all three against `prebuiltAppConfig` directly — ids exist, sizes
+match within 2 MB, and `needsF16` agrees with the quantisation in the id.
+
+The default is chosen after the hardware probe, not before. `DEFAULT_MODEL_ID`
+is an f16 build sized for a desktop, which a Qualcomm GPU cannot load at all —
+so the picker would have opened on a blocked model. A user's own choice is
+never overridden.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -511,6 +527,8 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Killing the network mid-download gives a readable message, and pressing
       download again resumes rather than starting over
 - [ ] With no API key, Gemini is offered as unavailable rather than failing silently
+- [ ] On a Qualcomm phone the picker opens on a model that can actually run
+- [ ] A parse failure prints what the model said, without enabling debug
 
 **Audio**
 - [ ] `s("bd*4").pan(0.3)` plays a kick, not an inaudible low tone

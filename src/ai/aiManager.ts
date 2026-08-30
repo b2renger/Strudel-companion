@@ -30,7 +30,7 @@ import {
 } from '../types';
 import { chromeBuiltInAi } from './chromeBuiltInAi';
 import { probeDevice } from './deviceProbe';
-import { DEFAULT_MODEL_ID, getModelSpec } from './models';
+import { DEFAULT_MODEL_ID, getModelSpec, smallestModelFor } from './models';
 import { getApiKey, hasApiKey } from './apiKeyStore';
 import {
   callGemini,
@@ -93,6 +93,13 @@ class AIManager {
    */
   private activeEngine: AIEngineType = 'instant-heuristic';
   private selectedModelId: string = DEFAULT_MODEL_ID;
+  /**
+   * Whether `selectedModelId` came from the user rather than the default.
+   *
+   * A default picked for a desktop is a bad default for a phone, but a choice
+   * the user actually made must never be overridden behind their back.
+   */
+  private modelWasChosenByUser = false;
 
   private worker: Worker | null = null;
   private pending = new Map<
@@ -203,8 +210,45 @@ class AIManager {
       log('device', `webgpu=${this.capabilities.webgpu} nano=${this.capabilities.chromeBuiltIn}` +
         `${nano.reason ? ` (${nano.reason})` : ''} geminiKey=${this.capabilities.hasGeminiKey}`);
     });
+    this.adoptDefaultModelFor(device);
     this.capabilityListeners.forEach((fn) => fn(this.capabilities));
     return this.capabilities;
+  }
+
+  /**
+   * Replaces the desktop default once we know what this device is.
+   *
+   * `DEFAULT_MODEL_ID` is a 879 MB f16 build, which is the wrong opening bid in
+   * two situations and cannot even run in one of them:
+   *
+   *  - A GPU with no `shader-f16` — most Android phones — cannot load it at
+   *    all, so the picker would open on a model that is blocked.
+   *  - On a phone, decode speed is the difference between usable and not, and
+   *    the smallest model is very often the right answer.
+   *
+   * Only ever changes a default. A model the user picked is left alone.
+   */
+  private adoptDefaultModelFor(device: DeviceProfile) {
+    if (this.modelWasChosenByUser) return;
+
+    const spec = getModelSpec(this.selectedModelId);
+    const cannotRun = spec?.needsF16 && !device.hasF16;
+    if (!cannotRun && !device.isMobile) return;
+
+    const better = smallestModelFor({ hasF16: device.hasF16 });
+    if (better === this.selectedModelId) return;
+
+    const reason = cannotRun
+      ? `this GPU has no 16-bit shader support`
+      : 'this is a phone or tablet, where the smallest model is usually the usable one';
+    event(
+      'device',
+      `default model switched to ${getModelSpec(better)?.name ?? better} — ${reason}`,
+    );
+    this.selectedModelId = better;
+    if (this.activeEngine === 'webgpu-gemma') {
+      this.currentProgress = this.idleProgressFor('webgpu-gemma');
+    }
   }
 
   getCapabilities(): EngineCapabilities {
@@ -225,7 +269,10 @@ class AIManager {
     if (typeof window === 'undefined') return;
     try {
       const savedModel = localStorage.getItem(MODEL_STORAGE_KEY);
-      if (savedModel && getModelSpec(savedModel)) this.selectedModelId = savedModel;
+      if (savedModel && getModelSpec(savedModel)) {
+        this.selectedModelId = savedModel;
+        this.modelWasChosenByUser = true;
+      }
 
       const saved = localStorage.getItem(ENGINE_STORAGE_KEY) as AIEngineType | null;
       if (saved && saved in AI_ENGINE_LABELS) {
@@ -601,7 +648,12 @@ class AIManager {
         err,
       );
       if ((err as any)?.raw) {
-        group('parse', 'raw model output that could not be parsed', () => {
+        // At event level, not debug. "It keeps falling back" is the most
+        // common report about the local engines, and the only thing that
+        // answers it is what the model actually said — which was previously
+        // only visible to someone who had already turned verbose logging on.
+        event('parse', `model output that could not be parsed: ${preview((err as any).raw, 400)}`);
+        group('parse', 'full raw model output', () => {
           log('parse', preview((err as any).raw, 1200));
         });
       }
