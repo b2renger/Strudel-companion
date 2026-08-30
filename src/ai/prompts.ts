@@ -2,7 +2,7 @@
  * System prompts and prompt templates for client-side Strudel synthesis.
  * Sized for small local models (0.5B–2B) as well as Gemini.
  *
- * Two rules govern this file:
+ * Three rules govern this file:
  *
  * 1. The sound vocabulary is NOT written here. It is generated from
  *    `src/audio/vocabulary.ts`, which the audio engine also reads. Hardcoding
@@ -10,7 +10,16 @@
  *    `supersaw` and `marimba` — names the engine renders as a wrong pitched
  *    tone or a plain sawtooth.
  *
- * 2. Output contracts are FENCED CODE + LABELLED LINES, not nested JSON.
+ * 2. Every builder here returns the TASK ONLY. It does not prepend the system
+ *    prompt. Each of the three engines has its own system channel — Gemini's
+ *    `systemInstruction`, Nano's `initialPrompts`, web-llm's system message —
+ *    and every one of them was ALSO receiving a copy embedded in the user
+ *    turn. That is ~550 wasted tokens per call on the full tier and, on Gemini
+ *    Nano's small window, enough to crowd out the actual request. Callers that
+ *    have no system channel (a chat template without a system turn) use
+ *    `withSystemPrompt()`.
+ *
+ * 3. Output contracts are FENCED CODE + LABELLED LINES, not nested JSON.
  *    Asking a 1B model for JSON with escaped newlines inside string values is
  *    close to the worst case for structured output; when such a reply is
  *    truncated, `jsonrepair` silently closes the string and hands back a
@@ -69,8 +78,14 @@ Hirajoshi, harmonic minor) and the root. Vary the groove (Euclidean (5,8)/(7,16)
 Avoid a generic 4-on-the-floor unless it is asked for.
 
 RULES:
+- NEVER write comments. No "//", no "/* */", nothing. A comment on the same
+  line as a layer silently deletes the rest of that line.
+- s("...") is ONLY for drums. A synth voice belongs in note("...").s("voice") —
+  writing s("rhodes") or s("sine") produces no sound at all.
 - Numeric effect arguments only. Write .pan(0.3), never .pan("0 1") — a quoted
   argument is parsed as a note pattern and will silence the layer.
+- Euclid arguments are whole numbers: bd(3,8), never bd(e,i).
+- One .s(...) per layer. Never chain .s("a").s("b").
 - Never nest a function call inside an effect argument.
 - Output only what the response format asks for. No preamble, no commentary.`;
 
@@ -95,25 +110,20 @@ export function buildGeneratePrompt(
   complexity: string,
   tempo: number
 ): string {
-  return `${STRUDEL_SYSTEM_PROMPT}
-
-TASK: compose a Strudel pattern.
+  return `TASK: compose a Strudel pattern.
 - Description: "${prompt}"
 - Style: "${style || 'Electronic'}"
 - Skill level: ${complexityLine(complexity)}
-- BPM: ${tempo || 120}
+- BPM: ${tempo || 120} — but if the description names a different tempo, follow
+  the description and report that number on the BPM line.
 
 The structure MUST genuinely reflect the ${complexity || 'Intermediate'} skill level.
-Add a short inline "// TWEAK TIP:" comment on each layer telling the user which
-number or symbol to change by hand and what it will do.
 
 ${CODE_BLOCK_CONTRACT}`;
 }
 
 export function buildTweakPrompt(currentCode: string, instruction: string): string {
-  return `${STRUDEL_SYSTEM_PROMPT}
-
-CURRENT PATTERN:
+  return `CURRENT PATTERN:
 \`\`\`strudel
 ${currentCode}
 \`\`\`
@@ -136,9 +146,7 @@ CHANGED: another specific edit`;
 }
 
 export function buildExplainPrompt(code: string): string {
-  return `${STRUDEL_SYSTEM_PROMPT}
-
-ANALYSE THIS PATTERN:
+  return `ANALYSE THIS PATTERN:
 \`\`\`strudel
 ${code}
 \`\`\`
@@ -168,9 +176,7 @@ export function buildVariationPrompt(
   variationType: string,
   description: string
 ): string {
-  return `${STRUDEL_SYSTEM_PROMPT}
-
-CURRENT PATTERN:
+  return `CURRENT PATTERN:
 \`\`\`strudel
 ${currentCode}
 \`\`\`
@@ -199,9 +205,7 @@ export const VARIATION_RECIPES = [
 ] as const;
 
 export function buildFixPrompt(code: string, errorMessage: string): string {
-  return `${STRUDEL_SYSTEM_PROMPT}
-
-THIS PATTERN FAILS TO PARSE:
+  return `THIS PATTERN FAILS TO PARSE:
 \`\`\`strudel
 ${code}
 \`\`\`
@@ -252,7 +256,12 @@ RULES:
 - <a b c> = one per cycle. [a b] = squeeze into one step. ~ = silence.
 - Effects take NUMBERS: .gain(0.8) .lpf(1200) .room(0.4) .delay(0.25) .decay(0.3)
 - Never write .pan("0 1") — a quoted effect argument breaks the layer.
-- Never invent drum or voice names that are not listed above.`;
+- Never invent drum or voice names that are not listed above.
+- NEVER write a comment. No "//" anywhere.
+- s("...") holds drums ONLY. s("rhodes") or s("sine") makes no sound —
+  a voice goes in note("c3 e3").s("rhodes").
+- Euclid takes whole numbers: hh(5,8). Never hh(e,i).
+- Write ONE .s(...) per layer, never .s("a").s("b").`;
 
 /** One complete, correctly formatted answer. Small models copy the shape. */
 const GENERATE_EXAMPLE = `EXAMPLE — for "dark rolling techno at 130 bpm" you would reply EXACTLY like this:
@@ -277,9 +286,7 @@ export function buildCompactGeneratePrompt(
   complexity: string,
   tempo: number,
 ): string {
-  return `${STRUDEL_SYNTAX_CARD}
-
-${GENERATE_EXAMPLE}
+  return `${GENERATE_EXAMPLE}
 
 NOW YOUR TURN.
 Request: "${prompt}"
@@ -292,9 +299,7 @@ Write nothing else — no greeting, no explanation outside those lines.`;
 }
 
 export function buildCompactTweakPrompt(currentCode: string, instruction: string): string {
-  return `${STRUDEL_SYNTAX_CARD}
-
-Here is an existing pattern:
+  return `Here is an existing pattern:
 \`\`\`strudel
 ${currentCode}
 \`\`\`
@@ -317,9 +322,7 @@ export function buildCompactVariationPrompt(
   variationType: string,
   description: string,
 ): string {
-  return `${STRUDEL_SYNTAX_CARD}
-
-Here is an existing pattern:
+  return `Here is an existing pattern:
 \`\`\`strudel
 ${currentCode}
 \`\`\`
@@ -337,10 +340,25 @@ line. Write nothing else.`;
  * code. A model that fumbled the multi-part format will usually manage this.
  */
 export function buildRetryPrompt(prompt: string, tempo: number): string {
-  return `${STRUDEL_SYNTAX_CARD}
-
-Write a Strudel pattern for: "${prompt}" at ${tempo || 120} BPM.
+  return `Write a Strudel pattern for: "${prompt}" at ${tempo || 120} BPM.
 
 Output ONLY the code, starting with stack( and ending with ). No code fence, no
 title, no explanation, no other text.`;
+}
+
+// ---------------------------------------------------------------------------
+// System-channel helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepends the system prompt to a task, for the one case that needs it: a chat
+ * template with no system turn (Gemma 2, for example), where the rules have to
+ * travel inside the user message.
+ *
+ * Every other caller passes the system text through its engine's own system
+ * channel and the task through the builders above. Do NOT use this in addition
+ * to a system message — sending both is the duplication this refactor removed.
+ */
+export function withSystemPrompt(task: string, tier: 'full' | 'compact'): string {
+  return `${tier === 'compact' ? STRUDEL_SYNTAX_CARD : STRUDEL_SYSTEM_PROMPT}\n\n${task}`;
 }

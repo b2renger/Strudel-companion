@@ -25,13 +25,21 @@ import {
 import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
 import {
   buildCompactGeneratePrompt,
+  buildGeneratePrompt,
+  withSystemPrompt,
   STRUDEL_SYNTAX_CARD,
+  STRUDEL_SYSTEM_PROMPT,
 } from '../src/ai/prompts.ts';
 import {
   parseStrudelCodeToTokens,
   findTokenExactRange,
   removeBlockInCode,
 } from '../src/utils/strudelTokenParser.ts';
+import {
+  sanitizeGeneratedCode,
+  stripComments,
+  stripCommentsLenient,
+} from '../src/ai/sanitizeCode.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -444,6 +452,180 @@ test('composition actually varies (this is the point of the module)', () => {
 
 test('an explicit tempo is honoured', () => {
   assert.equal(composeTrack('acid', 137, 1).bpm, 137);
+});
+
+// ---------------------------------------------------------------------------
+// Regressions from the 2026-08-30 live session trace.
+//
+// Every string below is copied verbatim from what a model actually produced in
+// front of a user. Three of them were shown to the user as a parse error; the
+// rest reached "EVALUATED OK" and played silence.
+// ---------------------------------------------------------------------------
+
+test('comments are stripped without touching string contents', () => {
+  const { code } = stripComments('s("a // b") // real comment');
+  assert.equal(code.trim(), 's("a // b")');
+});
+
+test("an apostrophe inside a comment does not swallow the rest of the pattern", () => {
+  // `balancedSlice` tracked quotes but not comments, so `don't` opened a
+  // string literal that never closed.
+  const got = extractCodeBlock('stack(\n  s("bd*4"), // don\'t change this\n  s("hh*8")\n)');
+  assert.ok(got, 'nothing extracted');
+  assert.ok(got!.includes('hh*8'), 'the pattern was truncated at the apostrophe');
+  assert.ok(!got!.includes('//'), 'the comment survived');
+});
+
+test('Gemini one-liner whose closing bracket is inside a comment is recovered', () => {
+  const raw =
+    'stack(s("bd [~ sd] bd [sd sd]").gain(0.8), // TWEAK TIP: change bd to tom for a ' +
+    'different kick texture. s("hh(5,8)*2").gain(0.5).pan(0.3), // TWEAK TIP: change 5 ' +
+    'to 7 for a denser hi-hat pattern. note("c2 e2 f2 g2").s("rhodes").room(0.4)' +
+    '.decay(0.5) // TWEAK TIP: change the notes to alter the chord progression.)';
+  const got = extractCodeBlock(raw);
+  assert.ok(got, 'the one-liner was not recovered');
+  assert.ok(validateStructure(got!).ok, `still invalid: ${validateStructure(got!).error}`);
+  assert.ok(got!.includes('hh(5,8)*2'), 'the middle layer was lost');
+  assert.ok(got!.includes('c2 e2 f2 g2'), 'the last layer was lost');
+});
+
+test('bracket recovery does NOT rescue a genuinely truncated reply', () => {
+  // The whole point of the constraint. A half-written pattern that looks
+  // valid is worse than an honest failure.
+  assert.equal(extractCodeBlock('stack(\n  s("bd*4"),\n  note("<c2 eb2 g'), null);
+  assert.equal(
+    extractCodeBlock('stack(\n  s("bd*4"), // kick\n  note("<c2 eb2 g'),
+    null,
+    'a comment earlier in the reply must not license closing the brackets',
+  );
+  assert.equal(extractCodeBlock('Sure! Here is a nice techno pattern for you.'), null);
+});
+
+test('the lenient strip only ends a comment at the next layer', () => {
+  const { code } = stripCommentsLenient('s("bd*4"), // tip goes here s("hh*8")');
+  assert.ok(code.includes('hh*8'), 'the following layer was discarded');
+  assert.ok(!code.includes('tip goes here'), 'the comment text survived');
+});
+
+test('a synth voice used as a drum pattern is removed, not played silently', () => {
+  // s("rhodes") is not a drum, so isDrumName() sends it down the melodic path,
+  // noteToFrequency() fails its regex and the event is dropped. The engine
+  // still counted the layer and reported "EVALUATED OK".
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4"),\n  s("rhodes"),\n  s("sine")\n)');
+  assert.ok(!r.code.includes('s("rhodes")'), 'the silent rhodes layer survived');
+  assert.ok(!r.code.includes('s("sine")'), 'the silent sine layer survived');
+  assert.ok(r.code.includes('s("bd*4")'), 'the real layer was removed');
+  assert.equal(r.problems.length, 2);
+  assert.ok(r.problems[0].includes('note('), 'the problem should say what to do instead');
+});
+
+test('a tweak that echoes its own instruction as a layer is removed', () => {
+  const r = sanitizeGeneratedCode(
+    'stack(\n  s("bd*4"),\n  s("transpose 1 octave up").s("sawtooth")\n)',
+  );
+  assert.ok(!r.code.includes('transpose'), 'the instruction text is still a layer');
+  assert.ok(r.code.includes('bd*4'));
+});
+
+test('a bare number in s() does not count as a playable token', () => {
+  // In this engine it reaches noteToFrequency as MIDI note 1 — 8.66 Hz.
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4"),\n  s("1 2 3")\n)');
+  assert.ok(!r.code.includes('"1 2 3"'));
+});
+
+test('non-numeric Euclid arguments are dropped, not passed to the transpiler', () => {
+  // s("shaker(e,i)") came back to the user as `RangeError: Invalid array length`.
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4"),\n  s("shaker(e,i)").pan(0.2)\n)');
+  assert.ok(r.code.includes('s("shaker")'), `got: ${r.code}`);
+  assert.ok(!r.code.includes('(e,i)'));
+  assert.ok(validateStructure(r.code).ok);
+});
+
+test('real Euclid arguments are left alone', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("bd(3,8)"),\n  s("hh(5,8,2)")\n)');
+  assert.ok(r.code.includes('bd(3,8)'), 'a valid Euclid call was damaged');
+  assert.ok(r.code.includes('hh(5,8,2)'), 'a three-argument Euclid call was damaged');
+  assert.equal(r.repairs.length, 0);
+});
+
+test('a duplicated .s() selector is collapsed', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4"),\n  note("c3").s("rhodes").s("rhodes")\n)');
+  assert.equal((r.code.match(/\.s\(/g) || []).length, 1, `got: ${r.code}`);
+});
+
+test('a stray ".~" is removed', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4").~ .lpf(800)\n)');
+  assert.ok(!r.code.includes('.~'), `got: ${r.code}`);
+  assert.ok(validateStructure(r.code).ok);
+});
+
+test('a dangling "." before a new layer becomes the comma it ate', () => {
+  const raw = 'stack(\n  s("hh*8").pan(0.4).// tip\n  s("bd*4")\n)';
+  const got = extractCodeBlock(raw);
+  assert.ok(got, 'nothing extracted');
+  const r = sanitizeGeneratedCode(got!);
+  assert.ok(r.code.includes('pan(0.4),'), `expected a comma, got: ${r.code}`);
+  assert.ok(validateStructure(r.code).ok);
+});
+
+test('a quoted numeric effect argument is unquoted', () => {
+  // .pan("0 1") is parsed as a note pattern and silences the layer.
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4").pan("0 1")\n)');
+  assert.ok(r.code.includes('.pan(0)'), `got: ${r.code}`);
+});
+
+test('a pattern whose every layer is silent is rejected outright', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("rhodes"),\n  s("sine")\n)');
+  assert.equal(r.allLayersDead, true);
+  assert.throws(
+    () => parseGeneratedTrack('```strudel\nstack(\n  s("rhodes"),\n  s("sine")\n)\n```'),
+    AIParseError,
+  );
+});
+
+test('a rest-only layer is intentional silence, not a dead layer', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4"),\n  s("~ ~ ~ ~")\n)');
+  assert.ok(r.code.includes('~ ~ ~ ~'), 'a deliberate rest layer was deleted');
+});
+
+test('a correct pattern passes through completely untouched', () => {
+  const good = 'stack(\n  s("bd*4").gain(0.95),\n  s("~ cp ~ cp").gain(0.8),\n' +
+    '  note("<c2 c2 eb2 g2>").s("sawtooth").lpf(900)\n)';
+  const r = sanitizeGeneratedCode(good);
+  assert.equal(r.code, good, 'the sanitiser rewrote valid code');
+  assert.equal(r.repairs.length, 0);
+  assert.equal(r.problems.length, 0);
+});
+
+test('prompt builders no longer embed the system prompt', () => {
+  // Every engine has its own system channel and was receiving a second copy
+  // inside the user turn.
+  const task = buildGeneratePrompt('dark techno', 'Techno', 'Advanced', 130);
+  assert.ok(!task.includes('You are Strudel AI'), 'the full system prompt is still embedded');
+  assert.ok(task.includes('dark techno'));
+
+  const compact = buildCompactGeneratePrompt('dark techno', 'Techno', 'Advanced', 130);
+  assert.ok(
+    !compact.includes('Strudel is a live-coding music language'),
+    'the syntax card is still embedded in the compact task',
+  );
+
+  assert.ok(withSystemPrompt('TASK: x', 'compact').includes('Strudel is a live-coding'));
+  assert.ok(withSystemPrompt('TASK: x', 'full').includes('You are Strudel AI'));
+});
+
+test('no prompt asks the model to write comments', () => {
+  // prompts.ts used to require an inline "// TWEAK TIP:" on every layer. Every
+  // hard parse failure in the session trace carried one.
+  const all = [
+    STRUDEL_SYSTEM_PROMPT,
+    STRUDEL_SYNTAX_CARD,
+    buildGeneratePrompt('x', 'y', 'Beginner', 120),
+    buildCompactGeneratePrompt('x', 'y', 'Beginner', 120),
+  ].join('\n');
+  assert.ok(!/TWEAK TIP/.test(all), 'a prompt still asks for TWEAK TIP comments');
+  assert.ok(/NEVER write comments|NEVER write a comment/.test(STRUDEL_SYSTEM_PROMPT));
+  assert.ok(/NEVER write a comment/.test(STRUDEL_SYNTAX_CARD));
 });
 
 // ---------------------------------------------------------------------------

@@ -24,13 +24,14 @@
  */
 
 import {
-  buildGeneratePrompt,
-  buildTweakPrompt,
   buildExplainPrompt,
-  buildVariationPrompt,
   buildFixPrompt,
-  STRUDEL_SYSTEM_PROMPT,
+  buildCompactGeneratePrompt,
+  buildCompactTweakPrompt,
+  buildCompactVariationPrompt,
+  STRUDEL_SYNTAX_CARD,
 } from './prompts';
+import { log, event, warn } from './diagnostics';
 import {
   parseGeneratedTrack,
   parseTweakResult,
@@ -115,9 +116,16 @@ export class ChromeBuiltInAiService {
 
     this.abort = new AbortController();
 
-    return LM.create({
+    const base = {
       // `systemPrompt` was replaced by a system-role entry in `initialPrompts`.
-      initialPrompts: [{ role: 'system', content: STRUDEL_SYSTEM_PROMPT }],
+      //
+      // Nano gets the COMPACT syntax card, not the full rulebook. In the
+      // session trace it was the weakest of the three engines by a wide
+      // margin — `s("rhodes").s("rhodes")`, `s("shaker(e,i)")`, `s("303").~` —
+      // and it is a far smaller model than the ones the full prompt was
+      // written for. The card plus a worked example demonstrates the contract
+      // instead of describing it.
+      initialPrompts: [{ role: 'system', content: STRUDEL_SYNTAX_CARD }],
       signal: this.abort.signal,
       monitor: (m: any) => {
         m.addEventListener('downloadprogress', (e: any) => {
@@ -125,7 +133,35 @@ export class ChromeBuiltInAiService {
           this.progressSink?.('Downloading Gemini Nano…', e.loaded);
         });
       },
-    });
+    };
+
+    // Chrome logs "No output language was specified in a LanguageModel API
+    // request. An output language should be specified to ensure optimal output
+    // quality and properly attest to output safety." — and on a fr-FR browser,
+    // which is what the trace came from, an unspecified output language is a
+    // real quality risk for English-only prompts.
+    //
+    // The option names have moved more than once across Chrome versions, and
+    // an unknown option is rejected rather than ignored, so this tries the
+    // annotated form first and falls back to the bare one.
+    const annotated = {
+      ...base,
+      outputLanguage: 'en',
+      expectedInputs: [{ type: 'text', languages: ['en'] }],
+      expectedOutputs: [{ type: 'text', languages: ['en'] }],
+    };
+
+    try {
+      return await LM.create(annotated);
+    } catch (err: any) {
+      warn(
+        'ai',
+        `Chrome built-in AI rejected the language hints (${err?.message ?? err}) — ` +
+          'retrying without them.',
+      );
+      this.abort = new AbortController();
+      return LM.create({ ...base, signal: this.abort.signal });
+    }
   }
 
   private async run(prompt: string, label: string): Promise<string> {
@@ -136,6 +172,10 @@ export class ChromeBuiltInAiService {
       if (!result || !String(result).trim()) {
         throw new Error('Chrome built-in AI returned an empty response.');
       }
+      // Nano's replies were the only ones the trace could not explain after
+      // the fact, because nothing recorded what it actually said.
+      event('ai', `Chrome built-in AI replied — ${String(result).length} chars`);
+      log('ai', String(result).slice(0, 3500));
       return String(result);
     } finally {
       if (typeof session?.destroy === 'function') session.destroy();
@@ -156,14 +196,17 @@ export class ChromeBuiltInAiService {
     tempo: number,
   ): Promise<AIGeneratedTrack> {
     const raw = await this.run(
-      buildGeneratePrompt(prompt, style, complexity, tempo),
+      buildCompactGeneratePrompt(prompt, style, complexity, tempo),
       'Composing…',
     );
     return parseGeneratedTrack(raw, prompt, style, tempo);
   }
 
   async tweak(currentCode: string, instruction: string): Promise<AITweakResult> {
-    const raw = await this.run(buildTweakPrompt(currentCode, instruction), 'Applying your change…');
+    const raw = await this.run(
+      buildCompactTweakPrompt(currentCode, instruction),
+      'Applying your change…',
+    );
     return parseTweakResult(raw);
   }
 
@@ -177,8 +220,9 @@ export class ChromeBuiltInAiService {
     mood: string,
     recipe: VariationRecipe,
   ): Promise<AIVariation> {
+    void mood; // the compact prompt carries the recipe; mood is full-tier only
     const raw = await this.run(
-      buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
+      buildCompactVariationPrompt(currentCode, recipe.type, recipe.description),
       `Creating "${recipe.title}"…`,
     );
     return parseVariationResult(raw, recipe);

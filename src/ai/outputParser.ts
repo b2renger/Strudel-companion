@@ -19,6 +19,7 @@
 
 import { AIGeneratedTrack, AITweakResult, AIExplanationResult, AIVariation } from '../types';
 import { jsonrepair } from 'jsonrepair';
+import { sanitizeGeneratedCode, stripComments, stripCommentsLenient } from './sanitizeCode';
 
 export class AIParseError extends Error {
   /** Raw model output, kept for the dev console — never shown to the user. */
@@ -70,10 +71,88 @@ function balancedSlice(text: string, start: number): string | null {
 const PATTERN_START = /(?:^|\n)([ \t]*)((?:stack|sound|note|n|s)\s*\()/;
 
 function extractFromCandidate(candidate: string): string | null {
-  const m = PATTERN_START.exec(candidate);
+  // Comments are removed BEFORE the parentheses are counted. `balancedSlice`
+  // tracks quotes but not comments, so an apostrophe in `// don't change this`
+  // opened a string that never closed and swallowed the rest of the reply; a
+  // `(` inside a comment threw the depth count off by one. Both were reaching
+  // users as `Missing ")" — a "(" was never closed`.
+  const strict = sliceFrom(stripComments(candidate).code);
+  if (strict) return strict;
+
+  // The model put the pattern and its comments on one line, so ending each
+  // comment at the newline deleted the pattern. Try ending them at the next
+  // layer instead. Only reached once the strict pass has failed.
+  if (candidate.includes('//')) {
+    const lenient = stripCommentsLenient(candidate).code;
+    return sliceFrom(lenient) ?? sliceClosingComments(lenient);
+  }
+  return null;
+}
+
+/**
+ * Recovers the case where a trailing comment swallowed the closing bracket.
+ *
+ * Gemini returned this verbatim in the session trace, all on one line:
+ *
+ *   stack(s("bd ...").gain(0.8), // ... s("hh(5,8)*2")... // ... progression.)
+ *
+ * The final `)` is inside the last comment, so no amount of comment stripping
+ * leaves a balanced expression.
+ *
+ * This is deliberately NOT a general "repair the brackets" pass, because that
+ * is precisely how a reply cut off by the token limit turns into a plausible
+ * half-written pattern — the failure mode this whole file exists to prevent.
+ * Three constraints keep the two cases apart:
+ *
+ *   - it only runs after comment stripping, on text that HAD comments;
+ *   - it truncates back to the last layer that closed cleanly, so a partial
+ *     trailing layer is discarded rather than completed;
+ *   - it gives up past two unclosed brackets.
+ *
+ * A truncated reply fails all the same, because its text does not reach this
+ * function: `looksTruncated` and the caller's own checks come first, and a
+ * reply with no comments never gets here at all.
+ */
+function sliceClosingComments(text: string): string | null {
+  const m = PATTERN_START.exec(text);
+  if (!m) return null;
+  const start = m.index + (m[0].length - m[2].length);
+
+  let depth = 0;
+  let quote: string | null = null;
+  let lastCleanEnd = -1;
+
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1).trim(); // balanced after all
+      // Depth 1 means an argument of the outer call just closed.
+      if (depth === 1) lastCleanEnd = i + 1;
+    }
+  }
+
+  if (quote !== null) return null; // an unterminated string is a real failure
+  if (depth < 1 || depth > 2) return null;
+  if (lastCleanEnd === -1) return null;
+
+  return `${text.slice(start, lastCleanEnd).trim()}${')'.repeat(depth)}`;
+}
+
+function sliceFrom(text: string): string | null {
+  const m = PATTERN_START.exec(text);
   if (!m) return null;
   const identStart = m.index + (m[0].length - m[2].length);
-  const slice = balancedSlice(candidate, identStart);
+  const slice = balancedSlice(text, identStart);
   return slice ? slice.trim() : null;
 }
 
@@ -81,7 +160,8 @@ function extractFromCandidate(candidate: string): string | null {
  * True when the text opened something it never closed — the signature of a
  * reply cut off by the token limit, as opposed to one that simply is not code.
  */
-function looksTruncated(text: string): boolean {
+function looksTruncated(rawText: string): boolean {
+  const text = stripComments(rawText).code;
   if ((text.match(/```/g) || []).length % 2 === 1) {
     // An unclosed fence alone is NOT proof: small models routinely forget the
     // closing fence on an otherwise complete answer. Only call it truncated if
@@ -132,6 +212,26 @@ export function extractCodeBlock(text: string): string | null {
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * Last gate before a pattern reaches the editor: repair it, and refuse it if
+ * every layer turned out to be silent.
+ *
+ * A pattern whose layers all fail to produce audio used to sail through as
+ * "EVALUATED OK — 3 layer(s)" and play nothing at all, which is a worse
+ * outcome than an honest failure because there is no error to react to.
+ */
+function finalizeCode(code: string, label: string, raw: string): string {
+  const result = sanitizeGeneratedCode(code, label);
+  if (result.allLayersDead) {
+    throw new AIParseError(
+      'The model used sound names this engine cannot play, so every layer ' +
+        'would have been silent.',
+      raw,
+    );
+  }
+  return result.code;
 }
 
 /** Read `LABEL: value` lines, ignoring anything inside the fenced block. */
@@ -203,7 +303,7 @@ export function parseGeneratedTrack(
   const json = extractJsonFromOutput<Partial<AIGeneratedTrack>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: extractCodeBlock(json.code) || json.code.trim(),
+      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), 'generated track', rawOutput),
       title: json.title || 'Untitled Pattern',
       bpm: Number(json.bpm) || defaultBpm,
       genre: json.genre || defaultGenre,
@@ -235,7 +335,7 @@ export function parseGeneratedTrack(
   const bpm = Number((firstLabel(labels, 'BPM') || '').replace(/[^\d.]/g, ''));
 
   return {
-    code,
+    code: finalizeCode(code, 'generated track', rawOutput),
     title: firstLabel(labels, 'TITLE') || 'Untitled Pattern',
     bpm: Number.isFinite(bpm) && bpm > 0 ? bpm : defaultBpm,
     genre: firstLabel(labels, 'GENRE') || defaultGenre,
@@ -251,7 +351,7 @@ export function parseTweakResult(rawOutput: string): AITweakResult {
   const json = extractJsonFromOutput<Partial<AITweakResult>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: extractCodeBlock(json.code) || json.code.trim(),
+      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), 'tweaked pattern', rawOutput),
       summary: json.summary || 'Pattern updated.',
       diffHighlights: Array.isArray(json.diffHighlights) ? json.diffHighlights : [],
       liveTweaks: Array.isArray(json.liveTweaks) ? json.liveTweaks : [],
@@ -270,7 +370,7 @@ export function parseTweakResult(rawOutput: string): AITweakResult {
 
   const labels = readLabels(rawOutput);
   return {
-    code,
+    code: finalizeCode(code, 'tweaked pattern', rawOutput),
     summary: firstLabel(labels, 'SUMMARY') || 'Pattern updated.',
     diffHighlights: labels.get('CHANGED') || [],
     liveTweaks: [],
@@ -340,7 +440,7 @@ export function parseVariationResult(
       title: json.title || recipe.title,
       type: recipe.type,
       description: json.summary || recipe.description,
-      code: extractCodeBlock(json.code) || json.code.trim(),
+      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), `variation "${recipe.type}"`, rawOutput),
       createdAt: Date.now(),
     };
   }
@@ -361,7 +461,7 @@ export function parseVariationResult(
     title: firstLabel(labels, 'TITLE') || recipe.title,
     type: recipe.type,
     description: firstLabel(labels, 'SUMMARY') || recipe.description,
-    code,
+    code: finalizeCode(code, `variation "${recipe.type}"`, rawOutput),
     createdAt: Date.now(),
   };
 }
