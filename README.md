@@ -123,6 +123,12 @@ strudel.save()    // download it as a .txt
 strudel.reset()   // clear it, then reproduce the problem cleanly
 ```
 
+Clipboard writes need a keypress or a click behind them, and typing into
+DevTools does not count. If `strudel.copy()` cannot write directly it falls
+back to a copy through the page, and failing that it arms the next ⌘C / Ctrl+C
+— click the page, press it, and the trace is on your clipboard. `strudel.save()`
+never has this problem.
+
 The trace contains an environment snapshot (browser, GPU, memory, storage,
 caches, service worker, stored preferences — never the API key) followed by a
 timestamped timeline:
@@ -142,6 +148,18 @@ timestamped timeline:
 00:14.301 ▶ [audio]  EVALUATED OK — 5 layer(s) at 130 BPM
 00:14.302 ▶ [audio]  PLAYING — ctx=running, 5 layer(s), 130 BPM
 ```
+
+If part of a pattern cannot make a sound, the timeline says so on the same
+line, and the editor shows an amber strip naming the tokens:
+
+```
+00:21.004 ▶ [audio]  EVALUATED OK — 4 layer(s) at 130 BPM — 2 token(s) WILL BE
+                     SILENT: rhodes, sine
+```
+
+This matters more than it looks. A silent layer is worse than a broken one:
+there is no error to react to, and the only symptom is music that feels emptier
+than the code looks.
 
 Failures are recorded in the same timeline, including the raw model text that
 could not be parsed, uncaught errors, and network online/offline transitions.
@@ -216,6 +234,21 @@ Be aware these are real Strudel features this engine does **not** implement:
 - Quoted patterns as effect arguments, e.g. `.pan("0 1")` — pass a number
 
 Patterns using these will fail validation rather than play something wrong.
+
+### Drums and pitched voices are different functions
+
+`s("…")` plays **drums only**. A pitched voice goes in `note("…").s("voice")`.
+
+```js
+s("rhodes")                 // silent — rhodes is not a drum name
+note("c3 e3 g3").s("rhodes") // what you meant
+```
+
+This trips up every model and most newcomers. `s("rhodes")` is not rejected by
+Strudel's parser — it is perfectly valid syntax — it simply produces nothing
+here, so the app calls it out instead of letting it pass as a working layer.
+Generated patterns have such layers removed automatically, and hand-written
+ones get the amber "Silent:" strip.
 
 ---
 

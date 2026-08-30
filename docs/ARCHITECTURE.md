@@ -131,6 +131,76 @@ JSON and shared.
 
 ---
 
+### Model output is repaired before it is trusted
+
+`src/ai/sanitizeCode.ts` sits between every engine and the editor. It exists
+because a live session trace showed four distinct ways a model's answer reached
+the user broken, and one way it reached them *silently* broken.
+
+The prompt no longer asks for the things that caused most of it — comments used
+to be requested explicitly, on every layer — but models volunteer them anyway,
+so the repair pass stays. It strips comments (with a string-aware scanner, not
+a regex), collapses chained `.s()` selectors, removes stray `.~`, turns a
+dangling `.` back into the comma it ate, unquotes numeric effect arguments and
+drops non-numeric Euclid arguments.
+
+The important one is the last: it removes layers that provably cannot make a
+sound. `s("rhodes")` is not a drum name, so `isDrumName` sends it down the
+melodic path, `noteToFrequency` fails its regex and the event is dropped — the
+layer is *silent*. Before this, `evaluate()` counted it, the trace counted it,
+and the user heard nothing. A pattern whose layers are all dead is rejected
+outright rather than handed over, on the same principle as the parser: an
+honest failure beats silence with no error to react to.
+
+Every edit it makes is recorded in `repairs` and logged, so a repaired pattern
+can never be mistaken for one the model got right. It never invents music — it
+only deletes what cannot sound and rewrites what is unambiguously a typo.
+
+`audioEngine.evaluate()` repeats the playability check independently and
+reports the result on `EvalEvent.silentTokens`, which the editor renders as an
+amber strip. Two layers of the same check, because the sanitiser only sees
+model output and the engine also has to cope with what the user types.
+
+### Truncated model output is salvaged, not discarded
+
+The worker used to throw the moment `finish_reason === 'length'`. In one
+session that discarded three tweaks that had each spent 37 seconds generating
+2,400+ characters — with, almost certainly, a complete pattern in the first
+few hundred. It now parses the reply first and only reports the truncation if
+the salvage also fails.
+
+That is safe only because the reverse guard exists too: `outputParser`'s
+bracket recovery is bounded so it cannot turn a genuinely cut-off reply into a
+plausible half-pattern. It truncates back to the last cleanly closed layer,
+gives up past two unclosed brackets, and only runs on text that contained
+comments in the first place. There are explicit negative-control tests for
+this; if you loosen it, keep them passing.
+
+Generation also stops as soon as the answer is structurally complete
+(`completionIsDone`). Small models do not reliably stop after a strict-format
+answer — they start a second pattern, or explain themselves, until the cap.
+
+### The system prompt travels in the system channel only
+
+Every prompt builder returns the **task**. It does not prepend
+`STRUDEL_SYSTEM_PROMPT` or `STRUDEL_SYNTAX_CARD`.
+
+All three engines have their own system channel — Gemini's
+`systemInstruction`, Nano's `initialPrompts`, web-llm's system message — and
+every one of them was *also* receiving a copy embedded in the user turn,
+because the builders prepended it. Roughly 550 wasted tokens per call, and on
+Nano's small window enough to crowd out the actual request.
+
+`withSystemPrompt()` covers the one case that genuinely needs it: a chat
+template with no system turn, where the rules have to travel inside the user
+message.
+
+Related: patterns quoted *into* a prompt have their comments stripped by
+`forModel()`. The starter presets and the procedural composer both write
+`// TWEAK TIP:` comments, so a tweak request was showing the model the exact
+same-line comment form the system prompt forbids two paragraphs earlier. A
+contradictory demonstration beats a stated rule with a small model.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -145,6 +215,10 @@ or a real network. Check these by hand after touching the relevant area.
 
 **Engines**
 - [ ] Each engine produces a pattern, and the "Written by" badge names it
+- [ ] No generated pattern contains a `//` comment
+- [ ] A local-model tweak finishes in single-digit seconds, not ~37
+- [ ] With Gemini's first chain model down, the fallback happens within ~12s
+      and the trace records WHY the first attempt was abandoned
 - [ ] Killing the network mid-request shows an error, not a silent template
 - [ ] Reloading with the local engine selected still works (worker is lazy)
 - [ ] Switching models frees the previous one and loads the new one
@@ -154,9 +228,13 @@ or a real network. Check these by hand after touching the relevant area.
 **Audio**
 - [ ] `s("bd*4").pan(0.3)` plays a kick, not an inaudible low tone
 - [ ] `s("bd*4, ~ [sd, cp](3,8)")` plays all three parts
-- [ ] Hush stops sound immediately, not after the current cycle
+- [ ] Hush stops sound immediately, not after the current cycle — and logs
+      `STOPPED (hush)` exactly once
 - [ ] Tempo is accurate against a metronome at 120 BPM
 - [ ] Generating a pattern on iPhone produces audible sound
+- [ ] Typing `s("rhodes")` by hand shows the amber "Silent:" strip
+- [ ] Typing `s("shaker(e,i)")` shows a readable error, not `Invalid array length`
+- [ ] The number of layers you hear matches the number the trace reports
 
 **Editor**
 - [ ] Clicking the fourth `hh` in a pattern edits the fourth, not the first
