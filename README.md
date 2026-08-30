@@ -235,6 +235,13 @@ Be aware these are real Strudel features this engine does **not** implement:
 
 Patterns using these will fail validation rather than play something wrong.
 
+### Tempo
+
+The BPM slider is the default, not the last word. If your prompt names a tempo
+— "138 BPM Acid Techno", "something at 90 bpm" — that number wins, the slider
+moves to it, and the model is asked for it. If the model returns a different
+tempo it is applied and the trace records both numbers.
+
 ### Drums and pitched voices are different functions
 
 `s("…")` plays **drums only**. A pitched voice goes in `note("…").s("voice")`.

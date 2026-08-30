@@ -201,6 +201,40 @@ Related: patterns quoted *into* a prompt have their comments stripped by
 same-line comment form the system prompt forbids two paragraphs earlier. A
 contradictory demonstration beats a stated rule with a small model.
 
+### The tempo comes from the request, not the slider
+
+`extractBpmFromPrompt()` reads a tempo out of whatever the user asked for —
+a suggestion or free text — and it beats the BPM slider.
+
+This was the shape of the bug: the suggestion list is full of prompts that name
+a tempo ("138 BPM Acid Techno", "at 113 BPM"), clicking one set the prompt text
+and *nothing else*, and the prompt then told the model `BPM: <slider>`. The
+model correctly echoed the number it was given, so an entire session of
+generations came out at the same tempo while every request asked for a
+different one. The model was never wrong; the prompt was.
+
+Two related labels were leaking into prompts the same way. "All Styles" is a UI
+string, and it was being quoted as a genre — the model was asked to write in
+the style of "All Styles" while the description said Amapiano. And the default
+complexity was "Beginner", which caps a pattern at 2–3 layers with no
+polymeter, while most of the suggestion list describes exactly the material
+that rules out.
+
+There is a test that every suggestion whose *title* promises a tempo actually
+names it in the text the model sees. Two did not.
+
+### Prompt text may only name sounds the engine has
+
+`vocabulary.ts` tells the model that `303`, `808`, `909`, `cabasa`, `supersaw`,
+`organ` and the rest are unsupported. The suggestion list was simultaneously
+handing it "squelchy resonant 303 sawtooth bassline" and "warm organ stabs" to
+copy, which is where the `s("303")` and `s("sub bass")` layers came from.
+
+Anything a model sees now names a timbre the engine can actually produce — "a
+squelchy resonant sawtooth bassline under a fast low-pass envelope". Titles,
+tags and descriptions keep the genre vocabulary, because those are read by a
+human. A test enforces the boundary; if you add a suggestion, it will tell you.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -216,6 +250,8 @@ or a real network. Check these by hand after touching the relevant area.
 **Engines**
 - [ ] Each engine produces a pattern, and the "Written by" badge names it
 - [ ] No generated pattern contains a `//` comment
+- [ ] Clicking a suggestion that names a tempo moves the BPM slider to it
+- [ ] Asking for "something at 90 bpm" in free text produces a 90 BPM pattern
 - [ ] A local-model tweak finishes in single-digit seconds, not ~37
 - [ ] With Gemini's first chain model down, the fallback happens within ~12s
       and the trace records WHY the first attempt was abandoned
