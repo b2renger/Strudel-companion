@@ -11,7 +11,14 @@
  * `window.onmessage`).
  */
 
-import { CreateMLCEngine, MLCEngine, InitProgressReport, hasModelInCache } from '@mlc-ai/web-llm';
+import {
+  CreateMLCEngine,
+  MLCEngine,
+  InitProgressReport,
+  hasModelInCache,
+  prebuiltAppConfig,
+  type AppConfig,
+} from '@mlc-ai/web-llm';
 import {
   buildGeneratePrompt,
   buildTweakPrompt,
@@ -38,6 +45,7 @@ import { AIWorkerRequest, AIWorkerResponse } from '../types';
 import { log, event, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
 import { setForwarder } from '../ai/sessionLog';
 import { completionIsDone } from '../ai/streamStop';
+import { isTransientLoadError, describeLoadFailure } from '../ai/modelLoadErrors';
 
 // The worker owns a separate module instance, so anything it records here
 // would be invisible to a trace exported on the main thread. Forward instead.
@@ -52,6 +60,35 @@ let loadedModelId: string | null = null;
  * map forever.
  */
 let initPromise: Promise<void> | null = null;
+
+/**
+ * Storage backends web-llm can keep model weights in, in the order we try them.
+ *
+ * The default Cache API path is one line long and has no resilience at all:
+ *
+ *     const result = await this.cache.match(request);
+ *     if (result === undefined) await this.cache.add(request);
+ *
+ * `Cache.add()` performs a single fetch and rejects on ANY failure — a dropped
+ * connection, a non-2xx, a redirect it does not like — with the useless
+ * "Failed to execute 'add' on 'Cache': Cache.add() encountered a network
+ * error". No retry, no resume. Spread across the ~40 shards of an 879 MB model
+ * on a phone, one hiccup anywhere kills the entire download.
+ *
+ * IndexedDB is web-llm's other backend and its implementation retries once on
+ * its own ("somehow failed to add to cache, delete and retry"). web-llm's own
+ * docs say the Cache API is the better-tested path, so it stays the default and
+ * IndexedDB is the escalation rather than the starting point.
+ */
+const CACHE_BACKENDS = ['cache', 'indexeddb'] as const;
+type CacheBackend = (typeof CACHE_BACKENDS)[number];
+
+/** Attempts per backend. Each one resumes: cached shards are skipped. */
+const LOAD_ATTEMPTS_PER_BACKEND = 2;
+
+function appConfigFor(backend: CacheBackend): AppConfig {
+  return { ...prebuiltAppConfig, cacheBackend: backend };
+}
 
 /**
  * Output budgets, in tokens.
@@ -101,11 +138,19 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
     if (engine && loadedModelId === modelId) return;
   }
 
+  // Checked against BOTH backends: a previous session may have fallen back to
+  // IndexedDB, and reporting "NOT cached" for weights that are sitting right
+  // there would be exactly the kind of lie the trace exists to prevent.
   let cached = false;
-  try {
-    cached = await hasModelInCache(modelId);
-  } catch {
-    cached = false;
+  for (const backend of CACHE_BACKENDS) {
+    try {
+      if (await hasModelInCache(modelId, appConfigFor(backend))) {
+        cached = true;
+        break;
+      }
+    } catch {
+      /* a backend that cannot even be queried has nothing in it */
+    }
   }
   event(
     'worker',
@@ -163,7 +208,85 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
       });
     };
 
-    engine = await CreateMLCEngine(modelId, { initProgressCallback, logLevel: 'WARN' });
+    // Retry, then escalate the storage backend.
+    //
+    // A retry is not wishful thinking here: `addToCache` checks the cache
+    // before fetching, so every shard that already arrived is skipped and the
+    // attempt genuinely resumes from where it broke. On a phone that is the
+    // difference between an 879 MB download failing outright and finishing on
+    // the second go.
+    let lastError: unknown = null;
+    for (const [backendIndex, backend] of CACHE_BACKENDS.entries()) {
+      if (backendIndex > 0) {
+        // Honest about the cost: the backends are separate storage, so
+        // whatever the Cache API managed to keep is not visible to IndexedDB
+        // and the download starts over. Only worth it because reaching here
+        // means the Cache API has already failed twice with resume available.
+        event(
+          'worker',
+          `switching to the ${backend} storage backend — this restarts the download`,
+        );
+        send({
+          id: reqId,
+          type: 'progress',
+          phase: 'init',
+          progress: {
+            status: 'downloading',
+            text: 'Switching storage method and starting the download again…',
+            progress: 0.01,
+          },
+        });
+      }
+      for (let attempt = 1; attempt <= LOAD_ATTEMPTS_PER_BACKEND; attempt++) {
+        try {
+          engine = await CreateMLCEngine(modelId, {
+            initProgressCallback,
+            logLevel: 'WARN',
+            appConfig: appConfigFor(backend),
+          });
+          if (backend !== CACHE_BACKENDS[0] || attempt > 1) {
+            event('worker', `loaded on attempt ${attempt} using the ${backend} backend`);
+          }
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          logError(
+            'worker',
+            `load attempt ${attempt}/${LOAD_ATTEMPTS_PER_BACKEND} (${backend}) failed — ` +
+              String((err as any)?.message ?? err),
+          );
+          if (!isTransientLoadError(err)) throw new Error(describeLoadFailure(err, modelId));
+          if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+            throw new Error(describeLoadFailure(err, modelId));
+          }
+          // Only announce and wait when there IS another attempt coming —
+          // otherwise this promises a resume that never happens and burns
+          // two seconds before reporting the failure.
+          const moreAttemptsHere = attempt < LOAD_ATTEMPTS_PER_BACKEND;
+          const moreBackends = backendIndex < CACHE_BACKENDS.length - 1;
+          if (!moreAttemptsHere && !moreBackends) break;
+          if (moreAttemptsHere) {
+            send({
+              id: reqId,
+              type: 'progress',
+              phase: 'init',
+              progress: {
+                status: 'downloading',
+                text: `The download stalled — resuming (attempt ${attempt + 1})…`,
+                progress: 0.02,
+              },
+            });
+          }
+          // A moment for a flaky mobile connection to come back.
+          await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+        }
+      }
+      if (engine) break;
+    }
+
+    if (!engine) throw new Error(describeLoadFailure(lastError, modelId));
+
     loadedModelId = modelId;
     loadTimer.end(`${modelId} resident in GPU memory`);
   })();

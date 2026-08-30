@@ -52,6 +52,7 @@ import {
   stripCommentsLenient,
 } from '../src/ai/sanitizeCode.ts';
 import { completionIsDone } from '../src/ai/streamStop.ts';
+import { isTransientLoadError, describeLoadFailure } from '../src/ai/modelLoadErrors.ts';
 import { clamp } from '../src/engine/audioEngine.ts';
 import {
   buildHeuristicVariations,
@@ -1240,6 +1241,49 @@ test('the AI variation prompts ask for one change, not a rewrite', () => {
   // The recipes themselves must not describe wholesale rewrites.
   const described = VARIATION_RECIPES.map((r) => r.description).join(' ');
   assert.ok(!/maximum drive|stripped back, atmospheric/.test(described));
+});
+
+test('an interrupted model download is explained, not quoted at the user', () => {
+  // What a phone actually produced: "Local model (WebGPU) could not run —
+  // Failed to execute 'add' on 'Cache': Cache.add() encountered a network
+  // error". web-llm's Cache API path is `if (!cached) await cache.add(req)` —
+  // one fetch, no retry — so any one of ~40 shards failing kills the lot.
+  const raw = new Error(
+    "Failed to execute 'add' on 'Cache': Cache.add() encountered a network error",
+  );
+  assert.ok(isTransientLoadError(raw), 'a Cache.add failure must be retryable');
+
+  const message = describeLoadFailure(raw, 'Llama-3.2-1B-Instruct-q4f16_1-MLC');
+  assert.ok(!/Cache\.add|execute 'add'/.test(message), `still DOM-speak: ${message}`);
+  assert.ok(/interrupted/i.test(message), 'does not say what happened');
+  assert.ok(/again/i.test(message), 'does not say the retry resumes');
+});
+
+test('load failures are classified so only retryable ones are retried', () => {
+  for (const retryable of [
+    "Failed to execute 'add' on 'Cache': Cache.add() encountered a network error",
+    'Failed to fetch',
+    'Load failed',
+    'NetworkError when attempting to fetch resource.',
+    'The operation timed out',
+  ]) {
+    assert.ok(isTransientLoadError(new Error(retryable)), `should retry: ${retryable}`);
+  }
+  for (const permanent of [
+    'Device does not support shader-f16',
+    'WebGPU is not available in this browser',
+    'Cannot find adapter that matches the request',
+  ]) {
+    assert.ok(!isTransientLoadError(new Error(permanent)), `should NOT retry: ${permanent}`);
+  }
+});
+
+test('a storage or device failure gets its own explanation', () => {
+  const quota = describeLoadFailure(new Error('QuotaExceededError: storage full'), 'model-x');
+  assert.ok(/storage/i.test(quota) && /smaller model|clear/i.test(quota));
+
+  const device = describeLoadFailure(new Error('Device does not support shader-f16'), 'model-x');
+  assert.ok(device.includes('model-x'), 'a device failure should name the model');
 });
 
 // ---------------------------------------------------------------------------

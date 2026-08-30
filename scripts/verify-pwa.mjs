@@ -118,6 +118,20 @@ if (!existsSync(swPath)) {
   for (const url of byUrl.keys()) {
     if (/aiWorker-/.test(url)) fail(`sw.js precaches the web-llm worker (${url}) — first visit pays 6 MB`);
   }
+
+  // The service worker must not touch model weights.
+  //
+  // web-llm stores them itself, in its own Cache Storage scope. A workbox
+  // route over the same hosts stored every shard a SECOND time — a 900 MB
+  // model occupying about 1.8 GB — and put a handler in the path of a download
+  // that is already the most fragile thing this app does. A `setDefaultHandler`
+  // would do the same thing to everything at once.
+  if (/huggingface|githubusercontent|cdn-lfs/i.test(sw)) {
+    fail('sw.js has a route over the model hosts — weights would be cached twice');
+  }
+  if (/setDefaultHandler/.test(sw)) {
+    fail('sw.js installs a catch-all handler, which would intercept model downloads');
+  }
 }
 
 // ---- index.html -----------------------------------------------------------

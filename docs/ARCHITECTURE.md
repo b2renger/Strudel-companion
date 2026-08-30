@@ -427,6 +427,43 @@ generate or a tweak — so trying three variations in a row left the beat you
 started from gone for good. It is an ordinary card, so returning is one click,
 and because it is IN the list the batch survives clicking it.
 
+### A model download must be able to survive a phone
+
+web-llm's Cache API backend is, in full:
+
+```js
+const result = await this.cache.match(request);
+if (result === undefined) await this.cache.add(request);
+```
+
+`Cache.add()` does a single fetch and rejects on any failure with
+`Failed to execute 'add' on 'Cache': Cache.add() encountered a network error`.
+No retry, no resume, and nothing in that message a musician can act on. Spread
+across the ~40 shards of an 879 MB model on mobile data, one hiccup anywhere
+kills the whole download — which is exactly how it reached a user.
+
+Three things address it, in order of how much they help:
+
+- **Retry, which genuinely resumes.** `addToCache` checks the cache before
+  fetching, so every shard that already arrived is skipped on the next attempt.
+  Two attempts per backend, with a short backoff.
+- **A storage-backend escalation.** web-llm also has an IndexedDB backend whose
+  implementation retries internally. It is the escalation, not the default,
+  because web-llm's own docs say the Cache API is better tested — and because
+  the two are separate storage, so switching restarts the download. The UI says
+  so rather than letting the progress bar quietly reset.
+- **A message worth reading**, in `src/ai/modelLoadErrors.ts`: what happened,
+  that the pieces already downloaded are kept, and that Gemini needs no
+  download at all. Failures that another attempt cannot fix — no adapter, no
+  `shader-f16` — are classified as permanent and fail immediately instead of
+  making the user wait through retries.
+
+The service worker is deliberately not in this path. `verify:pwa` fails the
+build if `sw.js` ever gains a route over the model hosts or a
+`setDefaultHandler`: web-llm stores the weights itself, a second route stored
+every shard again (a 900 MB model occupying ~1.8 GB), and putting a handler in
+front of the most fragile thing the app does has no upside.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -471,6 +508,8 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Cancel actually stops a download, and does NOT replace the pattern
 - [ ] After a worker crash, pressing "Download model" again spawns a new one
 - [ ] Backgrounding the tab mid-download does not abort it
+- [ ] Killing the network mid-download gives a readable message, and pressing
+      download again resumes rather than starting over
 - [ ] With no API key, Gemini is offered as unavailable rather than failing silently
 
 **Audio**
