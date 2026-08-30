@@ -68,6 +68,8 @@ import {
   BOS_ID,
   EOS_ID,
 } from '../src/ml/tokenizer.ts';
+import { buildStrudelGrammar, GRAMMAR_SHAPES, type GrammarTask } from '../src/ai/strudelGrammar.ts';
+import { Ebnf } from './ebnf.ts';
 import {
   STRUDEL_MODEL_CONFIG,
   parameterCount,
@@ -1489,6 +1491,112 @@ test('the parameter count responds to the architecture', () => {
     bigVocab > single * 8,
     'a 152k vocabulary should dominate — that is the whole point',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Grammar-constrained decoding.
+//
+// The claim is that these patterns become UNREPRESENTABLE, not repairable. That
+// is enforced at run time by XGrammar inside web-llm, which cannot be exercised
+// from here — so `test/ebnf.ts` is a small recognizer for the same subset, and
+// these tests are what stands behind the claim.
+// ---------------------------------------------------------------------------
+
+const GRAMMAR_FENCE = '`' + '`' + '`';
+const generateGrammar = new Ebnf(buildStrudelGrammar('generate'));
+const asGenerateReply = (pattern: string) =>
+  `${GRAMMAR_FENCE}strudel\n${pattern}\n${GRAMMAR_FENCE}\nTITLE: Iron\nBPM: 130\nGENRE: Techno\nWHY: Dark.\n`;
+
+test('the grammar accepts the shapes the composer actually writes', () => {
+  for (const pattern of [
+    'stack(\n  s("bd*4")\n)',
+    'stack(\n  s("bd*4").gain(0.95),\n  s("~ cp ~ cp").gain(0.8)\n)',
+    'stack(\n  s("hh(7,16)").gain(0.55)\n)',
+    'stack(\n  note("<c2 c2 eb2 g2>").s("sawtooth").lpf(900).decay(0.2)\n)',
+    'stack(\n  note("<[c3 eb3 g3] [ab2 c3 eb3]>").s("pluck").room(0.3)\n)',
+    'stack(\n  s("bd*4, hh*8")\n)',
+    'stack(\n  s("~ cp?")\n)',
+    'stack(\n  s("bd*4").pan(-0.3)\n)',
+    'stack(\n  note("f#4 c#3").s("rhodes")\n)',
+    'stack(\n  note("c2@2 eb2").s("sine")\n)',
+    'stack(\n  s("hh*8").fast(2)\n)',
+  ]) {
+    assert.ok(generateGrammar.matches(asGenerateReply(pattern)), `rejected valid:\n${pattern}`);
+  }
+});
+
+test('the grammar makes every failure in the session traces unrepresentable', () => {
+  const impossible: Array<[string, string]> = [
+    ['a synth voice used as a drum', 'stack(\n  s("rhodes")\n)'],
+    ['an invented sample name', 'stack(\n  s("303")\n)'],
+    ['prose as a pattern', 'stack(\n  s("sub bass")\n)'],
+    ['non-numeric Euclid arguments', 'stack(\n  s("shaker(e,i)")\n)'],
+    ['a quoted effect argument', 'stack(\n  s("bd*4").pan("0 1")\n)'],
+    ['an effect the engine ignores', 'stack(\n  s("bd*4").delaytime(0.375)\n)'],
+    ['a comment', 'stack(\n  s("bd*4"), // TWEAK TIP: try bd*8\n  s("hh*8")\n)'],
+    ['an unclosed bracket', 'stack(\n  s("bd*4"),\n  s("hh*8")'],
+    ['two source calls chained', 'stack(\n  s("bd*4").s("sawtooth")\n)'],
+    ['a missing layer separator', 'stack(\n  s("bd*4")\n  s("hh*8")\n)'],
+    ['a dangling dot', 'stack(\n  s("bd*4").\n)'],
+  ];
+  for (const [what, pattern] of impossible) {
+    assert.equal(
+      generateGrammar.matches(asGenerateReply(pattern)),
+      false,
+      `the grammar still permits ${what}`,
+    );
+  }
+});
+
+test('the grammar accepts real procedural composer output', () => {
+  // The sharpest check available offline: constraining the model to something
+  // our own composer's patterns would fail is a capability regression, not a
+  // safety measure.
+  let checked = 0;
+  const rejected: string[] = [];
+  for (const genre of PROCEDURAL_GENRES) {
+    for (let seed = 0; seed < 12; seed++) {
+      const code = sanitizeGeneratedCode(composeTrack(genre, undefined, seed).code).code.trim();
+      checked++;
+      if (!generateGrammar.matches(asGenerateReply(code))) {
+        rejected.push(`${genre}#${seed}:\n${code}`);
+      }
+    }
+  }
+  assert.ok(checked >= 100, `only ${checked} patterns checked`);
+  assert.equal(rejected.length, 0, `\n${rejected.slice(0, 2).join('\n\n')}`);
+});
+
+test('every task shape produces a well-formed grammar', () => {
+  for (const task of Object.keys(GRAMMAR_SHAPES) as GrammarTask[]) {
+    const text = buildStrudelGrammar(task);
+    // Parsing throws on an undefined rule reference or a malformed literal,
+    // which is the class of typo that would otherwise break every local
+    // generation the first time a user tried it.
+    const grammar = new Ebnf(text);
+    assert.ok(grammar.ruleNames().includes('root'), `${task}: no root rule`);
+    assert.equal(
+      (text.match(/"/g) || []).length % 2,
+      0,
+      `${task}: odd number of quotes — a literal is unterminated`,
+    );
+  }
+});
+
+test('the bare retry grammar wants code and nothing else', () => {
+  const bare = new Ebnf(buildStrudelGrammar('retry'));
+  assert.ok(bare.matches('stack(\n  s("bd*4")\n)\n'));
+  assert.equal(bare.matches(asGenerateReply('stack(\n  s("bd*4")\n)')), false);
+});
+
+test('the grammar names every sound the engine can play, and nothing else', () => {
+  const text = buildStrudelGrammar('generate');
+  for (const name of [...DRUM_VOICES, ...SYNTH_VOICES]) {
+    assert.ok(text.includes(`"${name}"`), `the grammar cannot spell "${name}"`);
+  }
+  for (const forbidden of ['303', '808', 'supersaw', 'cabasa', 'organ', 'delaytime']) {
+    assert.ok(!text.includes(`"${forbidden}"`), `the grammar can spell "${forbidden}"`);
+  }
 });
 
 // ---------------------------------------------------------------------------

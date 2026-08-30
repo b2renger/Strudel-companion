@@ -480,6 +480,36 @@ is an f16 build sized for a desktop, which a Qualcomm GPU cannot load at all —
 so the picker would have opened on a blocked model. A user's own choice is
 never overridden.
 
+### The local models are constrained to a grammar, not asked nicely
+
+web-llm supports `response_format: { type: 'grammar', grammar }`, backed by
+XGrammar, which masks the sampler at every step. A token that would break the
+grammar cannot be chosen.
+
+`src/ai/strudelGrammar.ts` generates an EBNF from `src/audio/vocabulary.ts` —
+the same source the engine and the prompts read — so every failure the session
+traces are full of stops being repairable and becomes **unrepresentable**:
+`s("rhodes")`, `s("303")`, `s("shaker(e,i)")`, `.pan("0 1")`, `.delaytime()`,
+`//` comments, unclosed brackets, two source calls chained, a missing layer
+separator, a dangling dot.
+
+Two things make this safe to ship without being able to run XGrammar here:
+
+- **It fails soft.** If the runtime rejects the grammar — unsupported, or
+  malformed — the first failure disables it for the session and the request is
+  retried unconstrained. The cost is one extra attempt, not a broken app.
+- **It is verified offline.** `test/ebnf.ts` is a small recognizer for the same
+  EBNF subset, and the tests assert that the grammar accepts every pattern the
+  procedural composer produces (144 of them) and rejects each of the eleven
+  failures above. Without that, "these are impossible now" would be an assertion
+  with nothing behind it.
+
+That second test is the one that matters in both directions. Constraining a
+model to something our own composer's output would fail is a capability
+regression wearing a safety measure's clothes — and an earlier, flatter version
+of the nesting rules did exactly that, rejecting 24 of 144 patterns because it
+allowed a suffix on a single hit but not on a group.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -507,6 +537,8 @@ or a real network. Check these by hand after touching the relevant area.
 **Engines**
 - [ ] Each engine produces a pattern, and the "Written by" badge names it
 - [ ] No generated pattern contains a `//` comment
+- [ ] The trace says CONSTRAINED by the Strudel grammar on the first local call
+- [ ] If it says the grammar was rejected, generation still works unconstrained
 - [ ] Clicking a suggestion that names a tempo moves the BPM slider to it
 - [ ] Every variation offered actually sounds different from what is playing
 - [ ] Editing the pattern and pressing Run empties the variation list

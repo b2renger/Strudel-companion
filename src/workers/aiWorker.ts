@@ -46,6 +46,7 @@ import { log, event, error as logError, timer, group, preview, estimateTokens, f
 import { setForwarder } from '../ai/sessionLog';
 import { completionIsDone } from '../ai/streamStop';
 import { isTransientLoadError, describeLoadFailure } from '../ai/modelLoadErrors';
+import { buildStrudelGrammar, describeGrammar, type GrammarTask } from '../ai/strudelGrammar';
 
 // The worker owns a separate module instance, so anything it records here
 // would be invisible to a trace exported on the main thread. Forward instead.
@@ -113,6 +114,18 @@ const BUDGET = {
   fix: 700,
   retry: 500,
 } as const;
+
+/**
+ * Whether this runtime accepted a grammar. `null` until we have tried.
+ *
+ * Constrained decoding is the single highest-value thing available for the
+ * local engines — it makes an invalid pattern unrepresentable rather than
+ * repairable — but a grammar this file cannot test offline is also a way to
+ * break every local generation at once. So the first failure disables it for
+ * the session and the request is retried unconstrained, which costs one extra
+ * attempt rather than the feature.
+ */
+let grammarSupported: boolean | null = null;
 
 function send(response: AIWorkerResponse) {
   self.postMessage(response);
@@ -316,6 +329,7 @@ async function complete(
   userPrompt: string,
   maxTokens: number,
   expectsCode = true,
+  grammarTask?: GrammarTask,
 ): Promise<Completion> {
   if (!engine) throw new Error('The local model is not loaded.');
 
@@ -353,7 +367,7 @@ async function complete(
   const genTimer = timer('worker', 'generating');
   let tokenCount = 0;
 
-  const stream = await engine.chat.completions.create({
+  const baseRequest = {
     messages,
     // Low, because every task here is a strict-format task. 0.4 produced
     // format drift that the parser then had to guess at.
@@ -361,7 +375,36 @@ async function complete(
     max_tokens: maxTokens,
     stream: true,
     stream_options: { include_usage: true },
-  } as any);
+  };
+
+  const useGrammar = grammarTask !== undefined && grammarSupported !== false;
+  let stream: any;
+
+  if (useGrammar) {
+    const grammar = buildStrudelGrammar(grammarTask!);
+    try {
+      stream = await engine.chat.completions.create({
+        ...baseRequest,
+        response_format: { type: 'grammar', grammar },
+      } as any);
+      if (grammarSupported === null) {
+        grammarSupported = true;
+        event('worker', `CONSTRAINED by the Strudel grammar — ${describeGrammar(grammarTask!)}`);
+      }
+    } catch (err: any) {
+      // Either the runtime does not support grammars or this one is malformed.
+      // Both are our problem, not the user's, and both are survivable.
+      grammarSupported = false;
+      logError(
+        'worker',
+        'the Strudel grammar was rejected — falling back to unconstrained generation ' +
+          `for the rest of this session. Reason: ${err?.message ?? err}`,
+      );
+      stream = await engine.chat.completions.create(baseRequest as any);
+    }
+  } else {
+    stream = await engine.chat.completions.create(baseRequest as any);
+  }
 
   let text = '';
   let finishReason: string | null = null;
@@ -450,8 +493,9 @@ async function completeAndParse<T>(
   maxTokens: number,
   parse: (raw: string) => T,
   expectsCode = true,
+  grammarTask?: GrammarTask,
 ): Promise<T> {
-  const { text, truncated } = await complete(reqId, prompt, maxTokens, expectsCode);
+  const { text, truncated } = await complete(reqId, prompt, maxTokens, expectsCode, grammarTask);
   try {
     const parsed = parse(text);
     if (truncated) event('worker', 'SALVAGED a complete pattern from the truncated reply');
@@ -503,6 +547,8 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
             build(prompt, style, complexity, tempo),
             BUDGET.generate,
             parseTrack,
+            true,
+            'generate',
           );
         } catch (err: any) {
           // One retry with every secondary instruction removed. A model that
@@ -518,6 +564,8 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
             buildRetryPrompt(prompt, tempo),
             BUDGET.retry,
             parseTrack,
+            true,
+            'retry',
           );
         }
         send({ id, type: 'result', data: parsed });
@@ -535,6 +583,8 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
             : buildTweakPrompt(currentCode, instruction),
           BUDGET.tweak,
           parseTweakResult,
+          true,
+          'tweak',
         );
         send({ id, type: 'result', data });
         break;
@@ -567,6 +617,8 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
             : buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
           BUDGET.variation,
           (raw) => parseVariationResult(raw, recipe),
+          true,
+          'variation',
         );
         send({ id, type: 'result', data });
         break;
@@ -580,6 +632,8 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
           buildFixPrompt(code, errorMessage),
           BUDGET.fix,
           parseTweakResult,
+          true,
+          'fix',
         );
         // The fix prompt now asks for the same shape as a tweak, so the two
         // share a parser. They previously disagreed — the prompt asked for
