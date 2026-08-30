@@ -357,6 +357,46 @@ with no icons does not error anywhere, Chrome simply never offers to install,
 and you find out when a user says there is no install button. The deploy
 workflow runs it before publishing.
 
+### Variations belong to exactly one pattern
+
+The variation list is cleared whenever the live pattern stops being the one
+they were generated from, and a new batch REPLACES the old one rather than
+being appended to it.
+
+Held past their source they are worse than useless: the panel offers three
+confident-looking alternatives that have nothing to do with what you can hear.
+Three separate paths were producing exactly that — batches accumulated across
+clicks, a cold start restored the most recent session's variations *without*
+its code (the editor opens on a starter preset), and the auto-save wrote
+variations into whichever session happened to be active regardless of whether
+its code matched.
+
+They survive exactly two things: pressing Run again without editing, and
+clicking one of the variations on offer — its siblings are still alternatives
+to the same source, which is what makes A/B-ing them during a set possible. Any
+other evaluation retires them.
+
+### Rule-based variations are built from the live pattern, and verified
+
+`src/ai/variationEngine.ts` parses the pattern into layers and applies one
+transform at a time, weighted toward MICRO edits — one layer, one parameter:
+ghost a single hit, open one hat of eight, hold one note, rotate a `<a b c>`
+sequence by one, nudge a gain or a pan. In a live set the useful move is
+usually one small thing.
+
+What it replaced was a fixed list of canned regexes that were presented as
+variations whether or not they had changed anything. Measured against the same
+techno pattern, 120 of the old generator's variations included **20 that were
+byte-identical to the pattern already playing**, 23 that carried `//` comments,
+and 9 with a quoted `.pan("…")` argument this engine ignores by design. Clicking
+one did nothing at all, roughly one time in six.
+
+Every candidate now has to survive three checks before it is offered: it must
+differ from the source, differ from the others in its batch, and still parse.
+A transform that does not apply to this pattern is dropped, not dressed up.
+The tests assert all of that, plus that at least 60% of what comes back touches
+a single layer.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -385,6 +425,9 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Each engine produces a pattern, and the "Written by" badge names it
 - [ ] No generated pattern contains a `//` comment
 - [ ] Clicking a suggestion that names a tempo moves the BPM slider to it
+- [ ] Every variation offered actually sounds different from what is playing
+- [ ] Editing the pattern and pressing Run empties the variation list
+- [ ] Clicking a variation keeps its siblings, so they can be A/B-ed
 - [ ] Asking for "something at 90 bpm" in free text produces a 90 BPM pattern
 - [ ] A local-model tweak finishes in single-digit seconds, not ~37
 - [ ] With Gemini's first chain model down, the fallback happens within ~12s

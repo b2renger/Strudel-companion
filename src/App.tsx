@@ -52,6 +52,14 @@ export default function App() {
 
   const [explanation, setExplanation] = useState<AIExplanationResult | null>(null);
   const [variations, setVariations] = useState<AIVariation[]>([]);
+  /**
+   * The exact pattern the current variations were generated from.
+   *
+   * Variations are alternatives to what is playing RIGHT NOW. Held past the
+   * pattern they came from they are worse than useless: the panel offers three
+   * confident-looking options that have nothing to do with what you can hear.
+   */
+  const [variationsSource, setVariationsSource] = useState<string | null>(null);
   const [lastTweakDiffs, setLastTweakDiffs] = useState<string[]>([]);
 
   /**
@@ -100,13 +108,12 @@ export default function App() {
     };
   }, []);
 
-  // Load initial saved sessions count and default variations
   useEffect(() => {
-    const loaded = getSavedSessions();
-    setSavedSessionsCount(loaded.length);
-    if (loaded.length > 0 && loaded[0].variations) {
-      setVariations(loaded[0].variations);
-    }
+    // Only the count. Restoring the most recent session's variations used to
+    // happen here WITHOUT its code — the editor opens on a starter preset — so
+    // every cold start began with a panel full of variations of a pattern that
+    // was not loaded. They come back with the session, in handleLoadSession.
+    setSavedSessionsCount(getSavedSessions().length);
   }, []);
 
   // Manifest shortcuts (long-press the icon on Android, right-click the
@@ -163,6 +170,33 @@ export default function App() {
     setErrorMessage(message);
   };
 
+  /**
+   * Drops the variation list when the live pattern is no longer the one they
+   * were made for.
+   *
+   * Kept in exactly two cases: the code is still the source itself (you pressed
+   * Run again without editing), or it IS one of the variations on offer (you
+   * clicked one, and its siblings are still alternatives to the same source).
+   * Any other evaluation — a hand edit, a generate, a tweak, a preset — retires
+   * them.
+   */
+  const retireStaleVariations = useCallback(
+    (nextCode: string) => {
+      setVariations((prev) => {
+        if (prev.length === 0) return prev;
+        const now = nextCode.trim();
+        const stillOurs =
+          (variationsSource !== null && now === variationsSource.trim()) ||
+          prev.some((v) => v.code.trim() === now);
+        if (stillOurs) return prev;
+        logEvent('user', `variations cleared — the live pattern changed (${prev.length} dropped)`);
+        setVariationsSource(null);
+        return [];
+      });
+    },
+    [variationsSource],
+  );
+
   // Safe code change handler
   const handleCodeChange = useCallback((newCode: string) => {
     if (typeof newCode === 'string') {
@@ -177,6 +211,7 @@ export default function App() {
     if (typeof codeOverride === 'string') {
       setCode(codeOverride);
     }
+    retireStaleVariations(targetCode);
     const res = audioEngine.evaluate(targetCode);
     if (res.success) {
       setErrorMessage(null);
@@ -227,6 +262,7 @@ export default function App() {
     setCurrentTrack(track);
     setCode(track.code);
     setBpm(track.bpm);
+    retireStaleVariations(track.code);
     setErrorMessage(null);
     setExplanation(null);
     setLastTweakDiffs([]);
@@ -256,6 +292,7 @@ export default function App() {
     setCode(session.code);
     setBpm(session.bpm);
     setVariations(session.variations || []);
+    setVariationsSource(session.code);
     setErrorMessage(null);
     setLastTweakDiffs([]);
 
@@ -325,6 +362,7 @@ export default function App() {
     };
 
     setVariations((prev) => [customVar, ...prev]);
+    setVariationsSource((prev) => prev ?? code);
     handleSaveVariationToSession(customVar);
   };
 
@@ -387,6 +425,7 @@ export default function App() {
       if (generated && generated.code) {
         setCodeBeforeAI(code);
         setCode(generated.code);
+        retireStaleVariations(generated.code);
         if (generated.bpm && generated.bpm !== targetBpm) {
           logEvent('ai', `model chose ${generated.bpm} BPM (asked for ${targetBpm})`);
         }
@@ -459,6 +498,7 @@ export default function App() {
         }
         setCodeBeforeAI(code);
         setCode(tweaked.code);
+        retireStaleVariations(tweaked.code);
         setLastTweakDiffs(
           unchanged
             ? ['The model returned the pattern unchanged — nothing was modified.']
@@ -508,8 +548,11 @@ export default function App() {
   const handleRequestVariations = async (mood: string) => {
     logEvent('user', `CLICK Variations — mood="${mood}"`);
     setIsLoadingVariations(true);
+    // Captured now: the editor can change while the request is in flight, and
+    // the variations belong to the pattern that was actually sent.
+    const sourceCode = code;
     try {
-      const result = await aiManager.suggestVariations(code, mood);
+      const result = await aiManager.suggestVariations(sourceCode, mood);
       setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
       const res = result.data;
       if (res && res.variations && res.variations.length > 0) {
@@ -519,28 +562,29 @@ export default function App() {
           createdAt: Date.now(),
         }));
 
-        // Accumulate across regenerations, but drop exact duplicates and cap
-        // the list. This previously appended `incoming` wholesale whenever
-        // every item was a duplicate, so repeated clicks grew the array — and
-        // the persisted session — without bound until localStorage filled up.
-        setVariations((prev) => {
-          const existingCodes = new Set(prev.map((p) => p.code.trim()));
-          const fresh = incoming.filter((v) => !existingCodes.has(v.code.trim()));
-          return [...fresh, ...prev].slice(0, MAX_VARIATIONS);
-        });
+        // REPLACE, not accumulate.
+        //
+        // These are alternatives to the pattern that is playing right now, so
+        // a previous batch — made from a pattern that has since changed — has
+        // no business sitting in the same list. Accumulating also meant the
+        // panel silently mixed variations of three different patterns, which
+        // is what made it untrustworthy in the first place.
+        setVariations(incoming.slice(0, MAX_VARIATIONS));
+        setVariationsSource(sourceCode);
 
-        // Auto-save generated variations to active session if exists
+        // Auto-save into the active session, but ONLY when that session is
+        // the pattern these were made from.
+        //
+        // This used to append them to whatever session happened to be active
+        // and to whatever was already stored there, so a session ended up
+        // holding variations of several different patterns — and reloading it
+        // put that mixture straight back on screen. A session's variations are
+        // variations of that session's code, or they are not stored.
         const activeId = getActiveSessionId();
         if (activeId) {
-          const sessions = getSavedSessions();
-          const target = sessions.find((s) => s.id === activeId);
-          if (target) {
-            // Capped for the same reason as the in-memory list: sessions are
-            // persisted to localStorage, whose quota is small on iOS Safari.
-            target.variations = [...incoming, ...(target.variations || [])].slice(
-              0,
-              MAX_VARIATIONS,
-            );
+          const target = getSavedSessions().find((s) => s.id === activeId);
+          if (target && target.code.trim() === sourceCode.trim()) {
+            target.variations = incoming.slice(0, MAX_VARIATIONS);
             saveSession(target);
           }
         }
@@ -557,7 +601,9 @@ export default function App() {
   };
 
   const handleClearVariations = () => {
+    logEvent('user', 'CLICK Clear variations');
     setVariations([]);
+    setVariationsSource(null);
   };
 
   // Apply a variation immediately
@@ -601,6 +647,7 @@ export default function App() {
           }
           setCodeBeforeAI(code);
           setCode(fixed.fixedCode);
+          retireStaleVariations(fixed.fixedCode);
           setErrorMessage(null);
           setLastTweakDiffs([
             unchanged
@@ -795,6 +842,7 @@ export default function App() {
                 onClick={() => {
                   logEvent('user', 'CLICK Undo — restoring the pattern from before the AI edit');
                   setCode(codeBeforeAI);
+                  retireStaleVariations(codeBeforeAI);
                   setCodeBeforeAI(null);
                   setResultSource(null);
                   const res = audioEngine.evaluate(codeBeforeAI);

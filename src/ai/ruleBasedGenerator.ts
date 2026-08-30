@@ -5,6 +5,7 @@
 
 import { AIGeneratedTrack, AITweakResult, AIExplanationResult, AIVariation } from '../types';
 import { composeTrack, PROCEDURAL_GENRES } from './proceduralComposer';
+import { buildHeuristicVariations } from './variationEngine';
 import { log } from './diagnostics';
 
 export interface GenreTemplate {
@@ -448,171 +449,24 @@ export function tweakHeuristicCode(currentCode: string, instruction: string): AI
  * Generate diverse, randomized live performance variations from code.
  * Supports multiple regenerations with fresh variations each time.
  */
-export function suggestHeuristicVariations(currentCode: string, mood: string = ''): { variations: AIVariation[] } {
-  const seed = Date.now();
-  const randSuffix = Math.random().toString(36).substring(2, 6);
-  const lowerMood = (mood || '').toLowerCase();
-
-  const allPossibleVariations: AIVariation[] = [
-    {
-      id: `var-${seed}-${randSuffix}-drop`,
-      title: '💥 Peak Energy Drop',
-      type: 'drop',
-      description: 'Saturates 4-on-the-floor kick, opens low-pass filters to 5000Hz, and maximizes bass punch.',
-      code: currentCode.includes('bd*4')
-        ? currentCode.replace(/\.lpf\(\d+\)/g, '.lpf(5200)').replace(/\.gain\([\d\.]+\)/g, '.gain(0.95)')
-        : currentCode.replace('stack(', 'stack(\n  // [Peak Drop Kick]\n  s("bd*4"),\n  s("hh*16").gain(0.65),'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-breakdown`,
-      title: '🌌 Ambient Reverb Breakdown',
-      type: 'breakdown',
-      description: 'Mutes drum kicks, sends harmonic layers into 85% space reverb and 45% stereo delay.',
-      code: currentCode
-        .replace(/s\("bd[^"]*"\),?/g, '// [kick muted for breakdown]')
-        .replace(/\.lpf\(\d+\)/g, '.lpf(1200)')
-        .replace(/\.room\([\d\.]+\)/g, '.room(0.85)')
-        .replace(/\.gain\([\d\.]+\)/g, '.gain(0.7)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-euclid`,
-      title: '🌀 Euclidean (3,8) / (5,8) Poly-Rhythm',
-      type: 'polyrhythm',
-      description: 'Converts straight subdivisions to syncopated Euclidean mathematical poly-meters.',
-      code: currentCode
-        .replace(/bd\*4/g, 'bd(3,8)')
-        .replace(/hh\*\d+/g, 'hh(5,8)')
-        .replace(/sd\*2/g, 'sd(2,8)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-acid`,
-      title: '🎛️ Resonant 303 Acid Sweep',
-      type: 'glitch',
-      description: 'Modulates sawtooth lead into a squelchy 303 acid line with snappy envelope decays.',
-      code: currentCode.includes('sawtooth')
-        ? currentCode.replace(/\.lpf\(\d+\)/g, '.lpf(1400)').replace(/\.decay\([\d\.]+\)/g, '.decay(0.18)')
-        : currentCode.replace('stack(', 'stack(\n  // [303 Acid Lead]\n  note("<c2 eb2 f2 g2 bb2 c3>*2").s("sawtooth").lpf(1300).decay(0.18).gain(0.85),'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-fast`,
-      title: '⚡ Double-Time Jungle / DNB Chop',
-      type: 'polyrhythm',
-      description: 'Accelerates hi-hats and snare subdivisions by 2x for high-octane tempo momentum.',
-      code: currentCode
-        .replace(/s\("hh[^"]*"\)/g, 's("hh*16").gain(0.4)')
-        .replace(/s\("sd[^"]*"\)/g, 's("[~ sd]*4").gain(0.75)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-halftime`,
-      title: '🥁 Half-Time Heavy Sub-Bass',
-      type: 'drop',
-      description: 'Relaxes drum pulse to half-time groove with deep floor-shaking sine sub-bass.',
-      code: currentCode
-        .replace(/hh\*16/g, 'hh*4')
-        .replace(/hh\*8/g, 'hh*4')
-        .replace('stack(', 'stack(\n  // [Deep Sub-Bass]\n  note("<c1 f1 g1 bb1>").s("sine").decay(0.8).gain(0.95),'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-staccato`,
-      title: '✨ Staccato Glitch & Micro-Plucks',
-      type: 'glitch',
-      description: 'Shortens envelope release times to 0.08s for tight, rhythmic micro-plucks.',
-      code: currentCode
-        .replace(/\.decay\([\d\.]+\)/g, '.decay(0.08)')
-        .replace(/\.room\([\d\.]+\)/g, '.room(0.2)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-stereo`,
-      title: '🎚️ Stereo Orbital Pan Movement',
-      type: 'harmonic',
-      description: 'Pans melodic and percussive layers left-to-right in cyclical alternation.',
-      code: currentCode
-        .replace(/\.pan\([^)]+\)/g, '')
-        .replace(/\.s\(/g, '.pan("< -0.75 0.75 >").s('),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-minor`,
-      title: '🎼 Emotive Minor 7th Re-Harmonization',
-      type: 'harmonic',
-      description: 'Shifts root harmonies and lead notes into deep emotive minor 7th chord voicings.',
-      code: currentCode
-        .replace(/c3 e3 g3/g, 'c3 eb3 g3 bb3')
-        .replace(/c2 e2 g2/g, 'c2 eb2 g2 bb2')
-        .replace(/d3 f#3 a3/g, 'd3 f3 a3 c4'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-dub`,
-      title: '📻 Dub Delay Tape Echo Wash',
-      type: 'breakdown',
-      description: 'Applies infinite syncopated dub echoes with dotted-eighth delay times.',
-      code: currentCode.includes('.delay(')
-        ? currentCode.replace(/\.delay\([\d\.]+\)/g, '.delay(0.55).delaytime(0.375)')
-        : currentCode.replace(/\.s\("([^"]+)"\)/g, '.s("$1").delay(0.5).delaytime(0.25).room(0.6)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-lofi`,
-      title: '📼 Dusty Vinyl Lo-Fi Flutter',
-      type: 'chill',
-      description: 'Low-passes overall frequency spectrum at 1800Hz with soft warmth and room ambiance.',
-      code: currentCode
-        .replace(/\.lpf\(\d+\)/g, '.lpf(1600)')
-        .replace(/\.gain\([\d\.]+\)/g, '.gain(0.7)'),
-      createdAt: Date.now(),
-    },
-    {
-      id: `var-${seed}-${randSuffix}-minimal`,
-      title: '🎚️ Hypnotic Minimalist Groove',
-      type: 'chill',
-      description: 'Strips away dense layers to focus on a hypnotic core groove and sub pulse.',
-      code: currentCode
-        .replace(/s\("hh\*16"\)/g, 's("hh*4").gain(0.4)')
-        .replace(/\.decay\([\d\.]+\)/g, '.decay(0.2)'),
-      createdAt: Date.now(),
-    },
-  ];
-
-  // Shuffle and pick 3-4 distinct variations
-  let filtered = allPossibleVariations;
-  if (lowerMood.includes('drop') || lowerMood.includes('energy') || lowerMood.includes('bass')) {
-    filtered = allPossibleVariations.filter((v) => v.type === 'drop' || v.type === 'glitch');
-  } else if (lowerMood.includes('ambient') || lowerMood.includes('breakdown') || lowerMood.includes('space') || lowerMood.includes('chill')) {
-    filtered = allPossibleVariations.filter((v) => v.type === 'breakdown' || v.type === 'chill');
-  } else if (lowerMood.includes('poly') || lowerMood.includes('euclid') || lowerMood.includes('rhythm')) {
-    filtered = allPossibleVariations.filter((v) => v.type === 'polyrhythm');
-  } else if (lowerMood.includes('acid') || lowerMood.includes('glitch') || lowerMood.includes('fx')) {
-    filtered = allPossibleVariations.filter((v) => v.type === 'glitch' || v.type === 'harmonic');
-  }
-
-  // If filtered list is small, fallback to all variations
-  if (filtered.length < 3) {
-    filtered = allPossibleVariations;
-  }
-
-  // Shuffle array using Fisher-Yates
-  const shuffled = [...filtered];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-
-  return {
-    variations: shuffled.slice(0, 3),
-  };
+export function suggestHeuristicVariations(
+  currentCode: string,
+  mood: string = '',
+): { variations: AIVariation[] } {
+  // Delegated to `variationEngine`, which builds edits from the layers of the
+  // pattern that is actually playing and drops any transform that turned out
+  // to be a no-op on it.
+  //
+  // What used to be here was a fixed list of a dozen canned transforms applied
+  // with blunt regexes, several of which could not do anything to a real
+  // pattern: a quoted `.pan("< -0.75 0.75 >")` that this engine ignores by
+  // design, a `.delaytime()` that does not exist, a literal `c3 e3 g3` match,
+  // and a breakdown that replaced a layer with a `//` comment. A click
+  // produced three confident titles and, often, three patterns identical to
+  // the one already on screen.
+  return { variations: buildHeuristicVariations(currentCode, mood, 4) };
 }
 
-/**
- * Auto-fix broken Strudel code syntax.
- */
 export function fixHeuristicCode(code: string, errorMessage: string): { fixedCode: string; fixExplanation: string; reason: string } {
   let fixed = code;
 

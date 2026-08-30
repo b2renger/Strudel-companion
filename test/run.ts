@@ -52,6 +52,8 @@ import {
 } from '../src/ai/sanitizeCode.ts';
 import { completionIsDone } from '../src/ai/streamStop.ts';
 import { clamp } from '../src/engine/audioEngine.ts';
+import { buildHeuristicVariations, splitPattern } from '../src/ai/variationEngine.ts';
+import { suggestHeuristicVariations } from '../src/ai/ruleBasedGenerator.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -1042,6 +1044,126 @@ test('numbers from a pattern are clamped before they can reach Web Audio', () =>
   assert.equal(clamp(0.8, 0, 4, 0.8), 0.8);
   assert.equal(clamp(-0.3, -1, 1, 0), -0.3);
   assert.equal(clamp(1200, 20, 20000, 12000), 1200);
+});
+
+// ---------------------------------------------------------------------------
+// Rule-based variations.
+//
+// The old generator applied canned regexes and presented the result whether or
+// not anything had changed — several of its transforms could not affect a real
+// pattern at all, so a click produced confident titles over patterns identical
+// to the one already playing.
+// ---------------------------------------------------------------------------
+
+const TECHNO = [
+  'stack(',
+  '  s("bd*4").gain(0.95),',
+  '  s("~ cp ~ cp").gain(0.8),',
+  '  s("hh*8").gain(0.55),',
+  '  note("<c2 c2 eb2 g2>").s("sawtooth").lpf(900).decay(0.2).gain(0.9),',
+  '  note("<[c3 eb3 g3] [ab2 c3 eb3]>").s("pluck").lpf(1800).room(0.3).gain(0.6)',
+  ')',
+].join('\n');
+
+test('a variation is never identical to the pattern it varies', () => {
+  for (let seed = 0; seed < 40; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, 'Dynamic & Surprising', 4, seed)) {
+      assert.notEqual(v.code.trim(), TECHNO.trim(), `seed ${seed}: "${v.title}" changed nothing`);
+    }
+  }
+});
+
+test('variations within one batch are distinct from each other', () => {
+  for (let seed = 0; seed < 40; seed++) {
+    const batch = buildHeuristicVariations(TECHNO, '', 4, seed);
+    const codes = new Set(batch.map((v) => v.code.trim()));
+    assert.equal(codes.size, batch.length, `seed ${seed} produced a duplicate`);
+  }
+});
+
+test('every variation still parses', () => {
+  for (let seed = 0; seed < 40; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, '', 4, seed)) {
+      const check = validateStructure(v.code);
+      assert.ok(check.ok, `seed ${seed} "${v.title}": ${check.error}\n${v.code}`);
+    }
+  }
+});
+
+test('most variations are TINY — one layer, one parameter', () => {
+  // The point of the rewrite. A variation that rewrites every layer is a
+  // different pattern, not a variation of this one.
+  const layersOf = (code: string) => splitPattern(code)?.layers ?? [];
+  const original = layersOf(TECHNO);
+  let tiny = 0;
+  let total = 0;
+
+  for (let seed = 0; seed < 40; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, '', 4, seed)) {
+      total++;
+      const changed = layersOf(v.code);
+      // A removed layer counts as one change too.
+      const differing =
+        changed.length !== original.length
+          ? 1
+          : changed.filter((l, i) => l.trim() !== original[i].trim()).length;
+      if (differing <= 1) tiny++;
+    }
+  }
+  assert.ok(total > 100, `only ${total} variations generated`);
+  assert.ok(tiny / total >= 0.6, `only ${tiny}/${total} touched a single layer`);
+});
+
+test('repeated clicks do not keep offering the same thing', () => {
+  const codes = new Set<string>();
+  const titles = new Set<string>();
+  for (let seed = 0; seed < 30; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, 'Dynamic & Surprising', 4, seed)) {
+      codes.add(v.code.trim());
+      titles.add(v.title);
+    }
+  }
+  assert.ok(codes.size >= 40, `only ${codes.size} distinct variations across 30 clicks`);
+  assert.ok(titles.size >= 10, `only ${titles.size} distinct kinds of edit`);
+});
+
+test('a pattern with no stack() wrapper still varies', () => {
+  const single = 's("bd*4").gain(0.9).lpf(2000)';
+  const batch = buildHeuristicVariations(single, '', 4, 7);
+  assert.ok(batch.length > 0, 'no variations for a single-layer pattern');
+  for (const v of batch) {
+    assert.notEqual(v.code.trim(), single);
+    assert.ok(validateStructure(v.code).ok);
+  }
+});
+
+test('an unparseable pattern yields nothing rather than nonsense', () => {
+  assert.deepEqual(buildHeuristicVariations('', '', 4, 1), []);
+  assert.deepEqual(buildHeuristicVariations('   ', '', 4, 1), []);
+});
+
+test('no variation reintroduces a quoted effect argument or a comment', () => {
+  // Two of the old transforms did exactly this: `.pan("< -0.75 0.75 >")`,
+  // which this engine ignores by design, and a `//` comment replacing a layer.
+  for (let seed = 0; seed < 40; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, '', 4, seed)) {
+      assert.ok(!/\/\//.test(v.code), `"${v.title}" emitted a comment`);
+      assert.ok(
+        !/\.(gain|pan|lpf|hpf|room|delay|decay|fast|slow)\s*\(\s*["'`]/.test(v.code),
+        `"${v.title}" emitted a quoted effect argument`,
+      );
+      assert.ok(!/delaytime/.test(v.code), `"${v.title}" used an unimplemented effect`);
+    }
+  }
+});
+
+test('the manager-facing entry point still returns variations', () => {
+  const { variations } = suggestHeuristicVariations(TECHNO, 'Heavy Drops & Peak Energy');
+  assert.ok(variations.length >= 3, `got ${variations.length}`);
+  for (const v of variations) {
+    assert.ok(v.title && v.description && v.code);
+    assert.notEqual(v.code.trim(), TECHNO.trim());
+  }
 });
 
 // ---------------------------------------------------------------------------

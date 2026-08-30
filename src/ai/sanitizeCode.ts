@@ -188,7 +188,7 @@ function unmaskStrings(masked: string, parts: string[]): string {
 }
 
 /** Splits `a, b, c` on commas that are not nested inside brackets or quotes. */
-function splitTopLevelArgs(inner: string): string[] {
+export function splitTopLevelArgs(inner: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let quote: string | null = null;
