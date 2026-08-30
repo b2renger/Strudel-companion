@@ -279,7 +279,7 @@ export interface AIWorkerRequest {
  */
 export interface AIWorkerResponse {
   id: string;
-  type: 'progress' | 'ready' | 'result' | 'stream_token' | 'error';
+  type: 'progress' | 'ready' | 'result' | 'stream_token' | 'error' | 'log';
   progress?: AIEngineProgress;
   data?: any;
   error?: string;

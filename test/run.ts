@@ -36,12 +36,28 @@ import {
 let passed = 0;
 const failures: string[] = [];
 
-function test(name: string, fn: () => void) {
-  try {
-    fn();
-    passed++;
-  } catch (err: any) {
-    failures.push(`${name}\n    ${err?.message?.split('\n')[0] ?? err}`);
+/**
+ * Cases are REGISTERED, not executed, then run one at a time below.
+ *
+ * Running them eagerly meant two async cases both started before either
+ * finished, and since several of them touch shared module state (the session
+ * trace buffer) each wiped the other's setup. Sequencing removes that whole
+ * class of flake.
+ */
+const cases: Array<[string, () => void | Promise<void>]> = [];
+
+function test(name: string, fn: () => void | Promise<void>) {
+  cases.push([name, fn]);
+}
+
+async function runAll() {
+  for (const [name, fn] of cases) {
+    try {
+      await fn();
+      passed++;
+    } catch (err: any) {
+      failures.push(`${name}\n    ${err?.message?.split('\n')[0] ?? err}`);
+    }
   }
 }
 
@@ -313,6 +329,40 @@ test('an unresolvable token yields a no-op range rather than a wrong edit', () =
 });
 
 // ---------------------------------------------------------------------------
+// Session trace — must never throw, since it runs after something went wrong
+// ---------------------------------------------------------------------------
+
+test('the trace records and formats without a browser', async () => {
+  const { record, formatTrace, clearTrace, getEntries } = await import('../src/ai/sessionLog.ts');
+  clearTrace();
+  record('event', 'user', 'CLICK Generate');
+  record('info', 'worker', 'prompt', 'stack(s("bd*4"))');
+  record('error', 'ai', 'engine failed', new Error('boom'));
+  assert.equal(getEntries().length, 3);
+
+  // No location/navigator/caches here at all — it must still produce a trace.
+  const text = await formatTrace();
+  assert.match(text, /STRUDEL AI SESSION TRACE/);
+  assert.match(text, /CLICK Generate/);
+  assert.match(text, /engine failed/);
+  assert.match(text, /ENVIRONMENT/);
+  clearTrace();
+});
+
+test('the trace survives circular and oversized detail', async () => {
+  const { record, formatTrace, clearTrace } = await import('../src/ai/sessionLog.ts');
+  clearTrace();
+  const circular: any = { name: 'loop' };
+  circular.self = circular;
+  record('info', 'test', 'circular', circular);
+  record('info', 'test', 'huge', 'x'.repeat(50_000));
+  const text = await formatTrace();
+  assert.match(text, /circular/);
+  assert.match(text, /truncated/);
+  clearTrace();
+});
+
+// ---------------------------------------------------------------------------
 // Prompts — we must not teach the model syntax we reject
 // ---------------------------------------------------------------------------
 
@@ -397,6 +447,8 @@ test('an explicit tempo is honoured', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+await runAll();
 
 console.log(`\n${passed} passed, ${failures.length} failed\n`);
 if (failures.length) {

@@ -110,15 +110,47 @@ Open the browser console and type `strudel.help()`.
 | `strudel.debug(true)` | verbose logging of every AI call — persists across reloads |
 | `strudel.cancel()` | abort the in-flight generation or download |
 
-With `strudel.debug(true)` you get, per request: the engine and model chosen,
-the prompt with an estimated token count, a warning if it will not fit the
-context window, model download progress with timings, generation throughput,
-the `finish_reason`, the raw completion, and — if anything fails — the reason
-and the raw text that could not be parsed.
+### Reporting a problem
 
-Verbose logging is on automatically in `npm run dev` and off in production
-until you turn it on, so ordinary visitors get a clean console. Errors are
-always shown.
+Every session is recorded to an in-memory trace **whether or not verbose
+logging is on**, so a problem can be captured after it happens rather than
+reproduced with logging enabled. To hand someone a complete footprint:
+
+```js
+strudel.copy()    // whole session trace → clipboard, paste it into an issue
+strudel.dump()    // print it instead
+strudel.save()    // download it as a .txt
+strudel.reset()   // clear it, then reproduce the problem cleanly
+```
+
+The trace contains an environment snapshot (browser, GPU, memory, storage,
+caches, service worker, stored preferences — never the API key) followed by a
+timestamped timeline:
+
+```
+00:04.132 ▶ [user]   CLICK Generate — "dark techno" | style=Techno | bpm=130
+00:04.133 ▶ [ai]     METHOD: Local model (WebGPU) (webgpu-gemma)
+00:04.133 ▶ [ai]     MODEL: Llama 3.2 1B — 879 MB, f16=true, ctx=4096, prompt=compact
+00:04.134 ▶ [worker] Llama-3.2-1B-…-MLC is ALREADY IN CACHE — loading from disk, no download
+00:06.881 ▶ [worker] ■ model resident in GPU memory — 2.7s
+00:06.882   [worker] prompt (760 est. tokens, 2279 chars)
+                     …the exact text sent to the model…
+00:14.210 ▶ [worker] ■ generated 148 chunks / 512 chars (finish_reason=stop) — 7.3s
+00:14.211   [worker] raw completion
+                     …exactly what came back…
+00:14.298 ▶ [ai]     RESULT accepted from Local model (WebGPU)
+00:14.301 ▶ [audio]  EVALUATED OK — 5 layer(s) at 130 BPM
+00:14.302 ▶ [audio]  PLAYING — ctx=running, 5 layer(s), 130 BPM
+```
+
+Failures are recorded in the same timeline, including the raw model text that
+could not be parsed, uncaught errors, and network online/offline transitions.
+Worker activity is forwarded to the same trace, so downloads and inference
+appear inline rather than in a separate console.
+
+`strudel.debug(true)` additionally prints all of this to the console live.
+Verbose printing is on automatically in `npm run dev` and off in production, so
+ordinary visitors get a clean console. Errors are always shown.
 
 ---
 

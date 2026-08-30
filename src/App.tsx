@@ -14,6 +14,7 @@ import { STARTER_PRESETS } from './data/presets';
 import { audioEngine } from './engine/audioEngine';
 import { aiManager } from './ai/aiManager';
 import { statusText } from './ai/progressText';
+import { event as logEvent } from './ai/diagnostics';
 import { AIExplanationResult, AIVariation, TrackPreset, SavedSession, AIEngineProgress, AIEngineType, AI_ENGINE_LABELS } from './types';
 
 import {
@@ -130,6 +131,7 @@ export default function App() {
   // Evaluate and play code
   const handleEvaluateAndPlay = useCallback((codeOverride?: string) => {
     const targetCode = typeof codeOverride === 'string' ? codeOverride : code;
+    logEvent('user', `EVAL requested — ${targetCode.split('\n').length} lines`);
     if (typeof codeOverride === 'string') {
       setCode(codeOverride);
     }
@@ -146,6 +148,7 @@ export default function App() {
 
   // Toggle Play / Stop
   const handleTogglePlay = useCallback(() => {
+    logEvent('user', isPlaying ? 'CLICK Stop' : 'CLICK Play');
     if (isPlaying) {
       audioEngine.hush();
       setIsPlaying(false);
@@ -178,6 +181,7 @@ export default function App() {
 
   // Select a preset track
   const handleSelectTrack = (track: TrackPreset) => {
+    logEvent('user', `LOAD preset — "${track.title}" (${track.genre}, ${track.bpm} BPM)`);
     setCurrentTrack(track);
     setCode(track.code);
     setBpm(track.bpm);
@@ -305,6 +309,7 @@ export default function App() {
     style: string,
     complexity: 'Beginner' | 'Intermediate' | 'Advanced'
   ) => {
+    logEvent('user', `CLICK Generate — "${prompt}" | style=${style} | complexity=${complexity} | bpm=${bpm}`);
     setIsGenerating(true);
     setErrorMessage(null);
 
@@ -368,6 +373,7 @@ export default function App() {
 
   // 2. Tweak Pattern with Natural Language
   const handleTweakCode = async (instruction: string) => {
+    logEvent('user', `CLICK Tweak — "${instruction}"`);
     setIsTweaking(true);
     audioEngine.unlock();
     try {
@@ -402,6 +408,7 @@ export default function App() {
 
   // 3. Explain Code Line-By-Line
   const handleExplainCode = async () => {
+    logEvent('user', 'CLICK Explain code');
     setIsExplaining(true);
     setActiveTab('breakdown');
     try {
@@ -419,6 +426,7 @@ export default function App() {
 
   // 4. Request Live DJ Variations
   const handleRequestVariations = async (mood: string) => {
+    logEvent('user', `CLICK Variations — mood="${mood}"`);
     setIsLoadingVariations(true);
     try {
       const result = await aiManager.suggestVariations(code, mood);
@@ -487,6 +495,7 @@ export default function App() {
 
   // 5. Fix Errors with AI
   const handleFixWithAI = async () => {
+    logEvent('user', `CLICK Fix with AI — error was: ${errorMessage}`);
     if (!errorMessage) return;
     setIsFixing(true);
     audioEngine.unlock();

@@ -111,7 +111,7 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
     const t = timer('gemini', `${model} (attempt ${i + 1}/${GEMINI_MODEL_CHAIN.length})`);
     if (i === 0) {
       group('gemini', `request (~${estimateTokens(userPrompt + systemInstruction)} est. tokens)`, () => {
-        log('gemini', preview(userPrompt, 900));
+        log('gemini', preview(userPrompt, 3500));
       });
     }
 
@@ -154,7 +154,7 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
           );
         }
         t.end(`${model} OK`);
-        group('gemini', 'raw response', () => log('gemini', preview(text, 1200)));
+        group('gemini', 'raw response', () => log('gemini', preview(text, 3500)));
         return text;
       }
 

@@ -19,7 +19,9 @@ import {
   inspectCaches,
   storageEstimate,
   fmtBytes,
+  event,
 } from './diagnostics';
+import { formatTrace, clearTrace, getEntries } from './sessionLog';
 
 /* eslint-disable no-console */
 
@@ -156,6 +158,54 @@ async function report() {
   console.groupEnd();
 }
 
+/** The whole session as one pasteable block. */
+async function dump(): Promise<string> {
+  const text = await formatTrace();
+  console.log(text);
+  console.log(
+    '%c↑ Select all of the above and paste it into your bug report. ' +
+      'strudel.copy() puts it on the clipboard instead.',
+    'color:#059669;font-weight:bold',
+  );
+  return text;
+}
+
+/** Copies the trace to the clipboard. */
+async function copy(): Promise<void> {
+  const text = await formatTrace();
+  try {
+    await navigator.clipboard.writeText(text);
+    console.log(
+      `%c✓ Session trace copied — ${getEntries().length} entries, ${text.length} chars. Paste it anywhere.`,
+      'color:#059669;font-weight:bold',
+    );
+  } catch {
+    console.warn('Clipboard blocked (needs a user gesture or permission). Use strudel.dump() and copy manually.');
+    console.log(text);
+  }
+}
+
+/** Saves the trace as a .txt file. */
+async function save(): Promise<void> {
+  const text = await formatTrace();
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `strudel-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next turn of the event loop so the download can start.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  console.log('%c✓ Trace saved to your downloads.', 'color:#059669;font-weight:bold');
+}
+
+function reset(): void {
+  clearTrace();
+  console.log('Session trace cleared. Reproduce the problem now, then run strudel.copy().');
+}
+
 function help() {
   console.log(
     `%cStrudel AI console
@@ -170,9 +220,18 @@ function help() {
 %cstrudel.debug(true)%c verbose logging of every AI call (persists across reloads)
 %cstrudel.cancel()%c    abort the in-flight generation or download
 
-Diagnostics are currently %c${isDebugEnabled() ? 'ON' : 'OFF'}%c.`,
+%cREPORTING A PROBLEM%c
+%cstrudel.copy()%c       copy the whole session trace to the clipboard  ← use this
+%cstrudel.dump()%c       print the trace instead
+%cstrudel.save()%c       download the trace as a .txt file
+%cstrudel.reset()%c      clear the trace, then reproduce the problem cleanly
+
+The trace is recorded ALWAYS, whether or not verbose logging is on, so you can
+capture a problem after it happens. Verbose console output is currently %c${isDebugEnabled() ? 'ON' : 'OFF'}%c.`,
     'font-weight:bold;font-size:13px',
     ...Array(9).fill(['color:#059669;font-weight:600', 'color:inherit']).flat(),
+    'font-weight:bold', 'color:inherit',
+    ...Array(4).fill(['color:#059669;font-weight:600', 'color:inherit']).flat(),
     isDebugEnabled() ? 'color:#059669;font-weight:bold' : 'color:#d97706;font-weight:bold',
     'color:inherit',
   );
@@ -192,15 +251,41 @@ export function installConsoleApi(): void {
     help,
     debug: setDebug,
     cancel: () => aiManager.cancel(),
+    dump,
+    copy,
+    save,
+    reset,
+    entries: getEntries,
   };
 
   (window as any).strudel = api;
 
   console.log(
-    `%cStrudel AI Live Studio%c — type %cstrudel.help()%c for diagnostics`,
+    `%cStrudel AI Live Studio%c — %cstrudel.help()%c for diagnostics, ` +
+      `%cstrudel.copy()%c to grab a full session trace for a bug report`,
     'color:#059669;font-weight:bold;font-size:13px',
     'color:inherit',
     'color:#059669;font-weight:600',
     'color:inherit',
+    'color:#059669;font-weight:600',
+    'color:inherit',
   );
+
+  // Uncaught failures belong in the trace — they are exactly what a user
+  // cannot describe accurately after the fact.
+  window.addEventListener('error', (e) => {
+    event('app', `UNCAUGHT ERROR: ${e.message}`, {
+      source: `${e.filename}:${e.lineno}:${e.colno}`,
+      stack: e.error?.stack?.split('\n').slice(0, 4).join('\n'),
+    });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    event('app', `UNHANDLED PROMISE REJECTION: ${(e.reason as any)?.message ?? e.reason}`, {
+      stack: (e.reason as any)?.stack?.split('\n').slice(0, 4).join('\n'),
+    });
+  });
+  window.addEventListener('online', () => event('app', 'network ONLINE'));
+  window.addEventListener('offline', () => event('app', 'network OFFLINE'));
+
+  event('app', `session started — ${location.href}`);
 }

@@ -11,7 +11,7 @@
  * `window.onmessage`).
  */
 
-import { CreateMLCEngine, MLCEngine, InitProgressReport } from '@mlc-ai/web-llm';
+import { CreateMLCEngine, MLCEngine, InitProgressReport, hasModelInCache } from '@mlc-ai/web-llm';
 import {
   buildGeneratePrompt,
   buildTweakPrompt,
@@ -34,7 +34,12 @@ import {
 import { getModelSpec, DEFAULT_MODEL_ID } from '../ai/models';
 import { AIParseError } from '../ai/outputParser';
 import { AIWorkerRequest, AIWorkerResponse } from '../types';
-import { log, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
+import { log, event, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
+import { setForwarder } from '../ai/sessionLog';
+
+// The worker owns a separate module instance, so anything it records here
+// would be invisible to a trace exported on the main thread. Forward instead.
+setForwarder((entry) => self.postMessage({ id: 'log', type: 'log', data: entry }));
 
 let engine: MLCEngine | null = null;
 let loadedModelId: string | null = null;
@@ -69,6 +74,19 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
     await initPromise;
     if (engine && loadedModelId === modelId) return;
   }
+
+  let cached = false;
+  try {
+    cached = await hasModelInCache(modelId);
+  } catch {
+    cached = false;
+  }
+  event(
+    'worker',
+    cached
+      ? `${modelId} is ALREADY IN CACHE — loading from disk, no download`
+      : `${modelId} is NOT cached — this will download the weights`,
+  );
 
   initPromise = (async () => {
     // Switching models: free the previous weights first. Reassigning over a
@@ -158,7 +176,7 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
     : ([{ role: 'user', content: userPrompt }] as any);
 
   group('worker', `prompt (${estimateTokens(userPrompt)} est. tokens, ${userPrompt.length} chars)`, () => {
-    log('worker', preview(userPrompt, 900));
+    log('worker', preview(userPrompt, 3500));
   });
   if (estimateTokens(userPrompt) + maxTokens > (spec?.contextWindow ?? 4096)) {
     logError(
@@ -214,7 +232,7 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
       (finishReason ? ` (finish_reason=${finishReason})` : ''),
   );
   log('worker', `throughput ≈ ${(tokenCount / (ms / 1000)).toFixed(1)} chunks/s over ${fmtMs(ms)}`);
-  group('worker', 'raw completion', () => log('worker', preview(text, 1200)));
+  group('worker', 'raw completion', () => log('worker', preview(text, 3500)));
 
   if (finishReason === 'length') {
     logError('worker', `Output hit the ${maxTokens}-token cap and was cut off mid-answer.`);

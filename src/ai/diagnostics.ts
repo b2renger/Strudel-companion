@@ -16,6 +16,8 @@
  * guards every storage access.
  */
 
+import { record } from './sessionLog';
+
 const STORAGE_KEY = 'strudel_debug';
 
 function readFlag(): boolean {
@@ -76,14 +78,29 @@ function stamp(tag: string): [string, string] {
   ];
 }
 
+/**
+ * Every one of these records to the session trace unconditionally, and prints
+ * only when verbose output is on. Recording is not optional: a user who hits a
+ * bug should never be told to reproduce it with logging enabled.
+ */
 export function log(tag: string, message: string, detail?: unknown): void {
+  record('info', tag, message, detail);
   if (!enabled) return;
   const [fmt, style] = stamp(tag);
   if (detail === undefined) console.log(`${fmt} ${message}`, style);
   else console.log(`${fmt} ${message}`, style, detail);
 }
 
+/** A milestone in the user's journey. Always printed — this is the narrative. */
+export function event(tag: string, message: string, detail?: unknown): void {
+  record('event', tag, message, detail);
+  const [fmt, style] = stamp(tag);
+  if (detail === undefined) console.log(`${fmt} %c${message}`, style, 'font-weight:600');
+  else console.log(`${fmt} %c${message}`, style, 'font-weight:600', detail);
+}
+
 export function warn(tag: string, message: string, detail?: unknown): void {
+  record('warn', tag, message, detail);
   if (!enabled) return;
   const [fmt, style] = stamp(tag);
   console.warn(`${fmt} ${message}`, style, detail ?? '');
@@ -91,12 +108,14 @@ export function warn(tag: string, message: string, detail?: unknown): void {
 
 /** Errors are ALWAYS shown — a silent failure is the thing we are fixing. */
 export function error(tag: string, message: string, detail?: unknown): void {
+  record('error', tag, message, detail);
   const [fmt, style] = stamp(tag);
   console.error(`${fmt} ${message}`, style, detail ?? '');
 }
 
 /** Collapsed group; the callback still runs when diagnostics are off. */
 export function group(tag: string, title: string, body: () => void): void {
+  record('info', tag, title);
   if (!enabled) {
     body();
     return;
@@ -122,7 +141,7 @@ export interface Timer {
 export function timer(tag: string, label: string): Timer {
   const t0 = now();
   let last = t0;
-  log(tag, `▶ ${label}`);
+  event(tag, label);
   return {
     elapsed: () => now() - t0,
     mark(mLabel, detail) {
@@ -132,7 +151,7 @@ export function timer(tag: string, label: string): Timer {
     },
     end(eLabel, detail) {
       const total = now() - t0;
-      log(tag, `■ ${eLabel ?? label} in ${fmtMs(total)}`, detail);
+      event(tag, `■ ${eLabel ?? label} — ${fmtMs(total)}`, detail);
       return total;
     },
   };

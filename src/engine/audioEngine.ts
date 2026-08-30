@@ -7,7 +7,7 @@
 import { TriggeredNote } from '../types';
 import { isDrumName } from '../audio/vocabulary';
 import { validatePattern, warmUpValidator } from '../audio/validate';
-import { log as dlog, warn as dwarn } from '../ai/diagnostics';
+import { log as dlog, warn as dwarn, event as devent } from '../ai/diagnostics';
 
 export interface EvalEvent {
   timestamp: number;
@@ -241,7 +241,7 @@ class StrudelAudioEngine {
       // `errorMessage` permanently null and the "Fix with AI" path dead.
       const validation = validatePattern(code);
       if (!validation.ok) {
-        dwarn('audio', `evaluate rejected: ${validation.error}`);
+        devent('audio', `EVALUATION REJECTED — ${validation.error}`, code.slice(0, 600));
         this.emitEval({
           timestamp: Date.now(),
           cycle: this.currentCycle,
@@ -280,8 +280,8 @@ class StrudelAudioEngine {
       }
 
       this.parsedLayers = this.parseStrudelCode(code);
-      dlog('audio', `evaluated ${this.parsedLayers.length} layer(s) at ${this.bpm} BPM`,
-        this.parsedLayers.map((l) => `${l.type}:${l.pattern.slice(0, 32)}`));
+      devent('audio', `EVALUATED OK — ${this.parsedLayers.length} layer(s) at ${this.bpm} BPM`,
+        this.parsedLayers.map((l) => `${l.type}:${l.soundType}:${l.pattern.slice(0, 40)}`));
       this.emitEval({
         timestamp: Date.now(),
         cycle: this.currentCycle,
@@ -335,6 +335,10 @@ class StrudelAudioEngine {
     }
 
     if (this.isRunning) return;
+    devent('audio', `PLAYING — ctx=${this.ctx?.state}, ${this.parsedLayers.length} layer(s), ${this.bpm} BPM`);
+    if (this.ctx?.state !== 'running') {
+      dwarn('audio', `AudioContext is "${this.ctx?.state}" — no sound will be heard until it resumes`);
+    }
     this.isRunning = true;
     // Anchor the cycle clock to the audio clock, with a little lead-in.
     this.nextCycleTime = this.ctx ? this.ctx.currentTime + 0.06 : 0;
@@ -366,6 +370,7 @@ class StrudelAudioEngine {
    * restored so the next play() is audible.
    */
   public hush() {
+    devent('audio', 'STOPPED (hush)');
     this.stop();
     this.voiceActivity = {};
 

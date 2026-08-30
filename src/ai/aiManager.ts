@@ -54,7 +54,8 @@ import {
   parseExplanationResult,
   parseVariationResult,
 } from './outputParser';
-import { log, warn, error as logError, timer, group, preview, estimateTokens } from './diagnostics';
+import { log, event, error as logError, timer, group, preview } from './diagnostics';
+import { ingest } from './sessionLog';
 import {
   generateHeuristicTrack,
   tweakHeuristicCode,
@@ -376,6 +377,12 @@ class AIManager {
     worker.onmessage = (e: MessageEvent<AIWorkerResponse>) => {
       const { id, type, progress, data, error, phase } = e.data;
 
+      // Trace entries forwarded from the worker's own module instance.
+      if (type === 'log') {
+        ingest(data);
+        return;
+      }
+
       if (progress) this.emitProgress(progress);
 
       // Loading the model is a step toward the answer, not the answer. Without
@@ -470,6 +477,7 @@ class AIManager {
     const requested = this.activeEngine;
 
     if (requested === 'instant-heuristic') {
+      event('ai', `METHOD: built-in pattern rules (no model, offline)`);
       const t = timer('ai', `${label} — built-in pattern rules`);
       const data = await fallback();
       t.end(`${label} — built-in pattern rules`);
@@ -477,14 +485,25 @@ class AIManager {
     }
 
     const t = timer('ai', `${label} — ${AI_ENGINE_LABELS[requested]}`);
+    event('ai', `METHOD: ${AI_ENGINE_LABELS[requested]} (${requested})`);
     if (requested === 'webgpu-gemma') {
-      t.mark('model', this.selectedModelId);
+      const spec = getModelSpec(this.selectedModelId);
+      event(
+        'ai',
+        `MODEL: ${spec?.name ?? this.selectedModelId} — ${spec?.vramMB ?? '?'} MB, ` +
+          `f16=${spec?.needsF16}, ctx=${spec?.contextWindow}, prompt=${spec?.promptStyle}`,
+      );
+      event('ai', `worker ${this.worker ? 'already running' : 'not yet spawned'}`);
+    }
+    if (requested === 'cloud-gemini') {
+      event('ai', `key present: ${hasApiKey()}`);
     }
     this.emitProgress({ status: 'ready', text: `${label}…`, progress: 0.05 });
 
     try {
       const data = await primary();
       t.end(`${label} — ${AI_ENGINE_LABELS[requested]} OK`);
+      event('ai', `RESULT accepted from ${AI_ENGINE_LABELS[requested]}`);
       group('ai', `result from ${AI_ENGINE_LABELS[requested]}`, () => {
         const code = (data as any)?.code ?? (data as any)?.fixedCode;
         if (typeof code === 'string') log('ai', 'code:\n' + preview(code));
@@ -516,8 +535,11 @@ class AIManager {
         progress: 0,
         errorMessage: reason,
       });
+      event('ai', `FALLBACK to built-in pattern rules — ${reason}`);
+      const fallbackData = await fallback();
+      event('ai', 'fallback produced a pattern');
       return {
-        data: await fallback(),
+        data: fallbackData,
         producedBy: 'instant-heuristic',
         requestedEngine: requested,
         degraded: reason,
