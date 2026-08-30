@@ -314,24 +314,42 @@ function applyTextRepairs(code: string, repairs: string[]): string {
     body = strayTilde;
   }
 
-  // A layer that ends with "." — always a syntax error, and the residue of a
-  // comment that followed the dot and ate the layer separator with it.
+  // A layer that ends with "." — the residue of a comment that followed the
+  // dot and ate the layer separator with it.
   //
-  // Indentation decides which it was. A deeper next line is a method chain
-  // broken across lines (legal JS) and keeps its dot; a next line at the same
-  // level or shallower is a new layer and gets the comma back.
+  // An earlier version used INDENTATION to decide whether the next line was a
+  // new layer or the continuation of a method chain. It was wrong in both
+  // directions and manufactured the exact error it was meant to remove: in a
+  // multi-line chain every link after the first sits at the SAME indent as the
+  // one before it, so `note("c2 e2").\n  s("sawtooth").\n  lpf(1200)` lost its
+  // voice and its filter, and `s("bd*4").\n  gain(0.8)` came out as the
+  // verbatim `Unexpected token (3:2)` from the session trace.
+  //
+  // Indentation is not the discriminator. Almost every name that can start a
+  // line here is also a legal chained method — `.s()`, `.note()`, `.n()`,
+  // `.gain()` — so the only safe reading of `foo().` followed by an identifier
+  // is a chain, and the dot stays. `stack(` is the one name that is never a
+  // method, so that alone earns the comma. Anything else (a bracket, a comma)
+  // means the dot is simply stray.
+  //
+  // The cost is that the one true positive in the trace — `.pan(0.4).` then
+  // `s("perc")`, which really was a layer — merges into the line above instead
+  // of splitting. That produces valid, audible code rather than a syntax
+  // error, which is the right way to be wrong here.
   const lines = body.split('\n');
   let danglingFixed = false;
   for (let i = 0; i < lines.length - 1; i++) {
     const m = lines[i].match(/^(\s*)(.*?)\.[ \t]*$/);
     if (!m || !m[2].trim()) continue;
-    const indent = m[1].length;
     const next = lines[i + 1];
     if (!next.trim()) continue;
-    const nextIndent = next.match(/^\s*/)![0].length;
-    if (nextIndent > indent && /^\s*[a-zA-Z_$]/.test(next)) continue; // method chain
-    const startsLayer = /^\s*(?:stack|sound|note|s|n)\s*\(/.test(next);
-    lines[i] = m[1] + m[2] + (startsLayer ? ',' : '');
+    if (/^\s*stack\s*\(/.test(next)) {
+      lines[i] = `${m[1]}${m[2]},`; // stack() is never a chained method
+      danglingFixed = true;
+      continue;
+    }
+    if (/^\s*[a-zA-Z_$][\w$]*\s*\(/.test(next)) continue; // a chained method
+    lines[i] = m[1] + m[2]; // stray dot before a bracket or comma
     danglingFixed = true;
   }
   if (danglingFixed) {

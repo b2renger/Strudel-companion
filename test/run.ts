@@ -577,13 +577,22 @@ test('a stray ".~" is removed', () => {
   assert.ok(validateStructure(r.code).ok);
 });
 
-test('a dangling "." before a new layer becomes the comma it ate', () => {
+test('a dangling "." before an identifier is left as a chain, not guessed at', () => {
+  // Deliberate. `.s()`, `.note()`, `.n()` and `.gain()` are all legal chained
+  // methods, so `foo().` followed by an identifier cannot be told apart from a
+  // layer that lost its comma. Reading it as a chain always yields valid,
+  // audible code; guessing "layer" deleted a voice and a filter in one real
+  // case and produced a syntax error in another.
   const raw = 'stack(\n  s("hh*8").pan(0.4).// tip\n  s("bd*4")\n)';
   const got = extractCodeBlock(raw);
   assert.ok(got, 'nothing extracted');
   const r = sanitizeGeneratedCode(got!);
-  assert.ok(r.code.includes('pan(0.4),'), `expected a comma, got: ${r.code}`);
+  assert.ok(r.code.includes('pan(0.4).'), `the dot was dropped: ${r.code}`);
   assert.ok(validateStructure(r.code).ok);
+
+  // `stack(` is the one name that is never a method, so it does get the comma.
+  const s2 = sanitizeGeneratedCode('stack(\n  s("bd*4").\n  stack(s("hh*8"))\n)');
+  assert.ok(s2.code.includes('s("bd*4"),'), `got: ${s2.code}`);
 });
 
 test('a quoted numeric effect argument is unquoted', () => {
@@ -819,6 +828,78 @@ test('"All Styles" is never quoted to the model as a genre', () => {
   assert.ok(/take it from the description/.test(built));
   // A real style still comes through.
   assert.ok(buildGeneratePrompt('x', 'Techno', 'Intermediate', 130).includes('"Techno"'));
+});
+
+test('a truncated Gemini JSON reply is rejected, not shipped as a fragment', () => {
+  // jsonrepair closes the cut-off string and hands back well-formed JSON whose
+  // `code` is half a pattern. extractCodeBlock correctly returns null for it —
+  // and a `|| json.code.trim()` fallback used to ship the fragment anyway,
+  // over the user's working pattern, reported as success.
+  const cut =
+    '{"code":"stack(\\n s(\\"bd*4\\"),\\n s(\\"hh*8\\").lpf(3000).gain(0.4",' +
+    '"summary":"Updated.","title":"X","bpm":130,"genre":"Techno","explanation":"y"}';
+  assert.throws(() => parseTweakResult(cut), AIParseError);
+  assert.throws(() => parseGeneratedTrack(cut), AIParseError);
+  assert.throws(
+    () => parseVariationResult(cut, { type: 'drop', title: 'D', description: 'd' }),
+    AIParseError,
+  );
+
+  // A complete JSON reply still works.
+  const whole =
+    '{"code":"stack(\\n s(\\"bd*4\\"),\\n s(\\"hh*8\\").gain(0.4)\\n)",' +
+    '"summary":"Updated.","title":"X","bpm":130,"genre":"Techno","explanation":"y"}';
+  assert.ok(parseTweakResult(whole).code.includes('hh*8'));
+  assert.equal(parseGeneratedTrack(whole).bpm, 130);
+});
+
+test('a reply cut off mid-comment is not closed up and passed off as complete', () => {
+  // The model was writing a comment when it hit the cap, so the reply DOES end
+  // inside one — but the comment has no bracket in it, and the premise of the
+  // recovery is that a comment ate a bracket. Without that check the user lost
+  // the very layer they had asked for, with no error.
+  const cut =
+    'stack(\n  s("bd*4").gain(0.95),\n  s("~ cp ~ cp"),\n' +
+    '  s("hh(7,16)").gain(0.55) // now add the sub bass under';
+  assert.throws(() => parseTweakResult(cut), AIParseError);
+
+  // The case it exists for still recovers.
+  const genuine = 'stack(s("bd*4").gain(0.8), // tip one. s("hh(5,8)").gain(0.5) // tip two.)';
+  assert.ok(parseTweakResult(genuine).code.includes('hh(5,8)'));
+});
+
+test('a multi-line method chain is never rewritten', () => {
+  // The indentation heuristic that used to live here deleted a layer's voice
+  // and filter in one case and produced `Unexpected token (3:2)` in another —
+  // the same error string it was written to remove.
+  for (const chain of [
+    'stack(\n  note("c2 e2").\n  s("sawtooth").\n  lpf(1200),\n  s("bd*4")\n)',
+    'stack(\n  note("c2 e2").\n    s("sawtooth").\n    lpf(1200),\n  s("bd*4")\n)',
+    'stack(\n  s("bd*4").\n  gain(0.8),\n  s("hh*8")\n)',
+    'stack(\n  s("hh*8").pan(0.4).\n  s("perc*2"),\n  s("bd*4")\n)',
+  ]) {
+    const r = sanitizeGeneratedCode(chain);
+    assert.equal(r.code, chain, `rewrote a legal chain:\n${r.code}`);
+    assert.ok(validateStructure(r.code).ok);
+  }
+});
+
+test('a stray "." before a bracket is still removed', () => {
+  const r = sanitizeGeneratedCode('stack(\n  s("bd*4").\n)');
+  assert.ok(!/\.\s*\n/.test(r.code), `got: ${r.code}`);
+  assert.ok(validateStructure(r.code).ok);
+});
+
+test('a unit is not read as a tempo', () => {
+  // `(\d+)\s*(?!percent)` backtracks \s* to zero width and succeeds, so the
+  // exclusion never fired: "the reverb at 60 percent" moved the BPM slider.
+  assert.equal(extractBpmFromPrompt('the reverb at 60 percent'), null);
+  assert.equal(extractBpmFromPrompt('a kick at 100 percent gain'), null);
+  assert.equal(extractBpmFromPrompt('a breakdown at 64 steps in'), null);
+  assert.equal(extractBpmFromPrompt('a delay at 250 ms'), null);
+  assert.equal(extractBpmFromPrompt('filter at 80 %'), null);
+  // A bare tempo still reads.
+  assert.equal(extractBpmFromPrompt('Math Rock at 130 in 7/8'), 130);
 });
 
 // ---------------------------------------------------------------------------

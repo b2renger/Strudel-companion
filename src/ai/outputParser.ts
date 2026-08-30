@@ -143,12 +143,14 @@ function endsInsideLineComment(text: string): boolean {
  *
  *   1. No unterminated code fence. A model that opened ``` and never closed it
  *      was cut off; that is a truncation signal, not a comment problem.
- *   2. Nothing but whitespace after the last cleanly closed layer. If real
+ *   2. The trailing comment must contain a closing bracket — the premise of
+ *      the whole function is that a comment ate one.
+ *   3. Nothing but whitespace after the last cleanly closed layer. If real
  *      content follows it, the reply stopped mid-layer — exactly what
  *      truncation looks like, and never what a swallowed bracket looks like,
  *      because there the only thing that followed was the comment we just
  *      removed.
- *   3. Exactly one bracket missing. Truncating back to the last clean layer
+ *   4. Exactly one bracket missing. Truncating back to the last clean layer
  *      leaves the outer call and nothing else open, so anything other than one
  *      means a bracket went missing mid-structure, which is not this case.
  */
@@ -161,6 +163,15 @@ function sliceClosingComments(text: string, original: string): string | null {
 
   // (1) an unterminated fence means the reply was cut off.
   if ((original.match(/```/g) || []).length % 2 === 1) return null;
+
+  // (2) the trailing comment must actually CONTAIN a closing bracket — which
+  //     is the entire premise: the comment ate it. A model cut off while
+  //     writing a comment also ends inside one, but its half-written sentence
+  //     ("// now add the sub bass under") has no bracket in it. Without this,
+  //     a truncated reply lost the very layer the user had asked for and was
+  //     still reported as a successful edit.
+  const lastComment = original.slice(original.lastIndexOf('//'));
+  if (!lastComment.includes(')')) return null;
 
   const m = PATTERN_START.exec(text);
   if (!m) return null;
@@ -190,10 +201,10 @@ function sliceClosingComments(text: string, original: string): string | null {
   }
 
   if (quote !== null) return null; // an unterminated string is a real failure
-  if (depth !== 1) return null; // (3)
+  if (depth !== 1) return null; // (4)
   if (lastCleanEnd === -1) return null;
 
-  // (2) whatever follows the last complete layer must be nothing at all.
+  // (3) whatever follows the last complete layer must be nothing at all.
   if (text.slice(lastCleanEnd).trim() !== '') return null;
 
   return `${text.slice(start, lastCleanEnd).trim()})`;
@@ -276,6 +287,33 @@ export function extractCodeBlock(text: string): string | null {
  * "EVALUATED OK — 3 layer(s)" and play nothing at all, which is a worse
  * outcome than an honest failure because there is no error to react to.
  */
+/**
+ * The code field of a schema-constrained JSON reply.
+ *
+ * There used to be a `|| json.code.trim()` fallback here, and it was a hole
+ * the size of the one this file's header warns about. When Gemini hits
+ * `maxOutputTokens` mid-string, `jsonrepair` closes the string and hands back
+ * well-formed JSON whose `code` is a fragment. `extractCodeBlock` correctly
+ * returned null for it — and the fallback then shipped the fragment anyway,
+ * straight into the user's editor over their working pattern, reported as
+ * success. `looksTruncated` was never consulted on this path at all.
+ *
+ * There is no fallback now. If no balanced pattern can be found in the field,
+ * that is a parse failure, which is the honest answer.
+ */
+function codeFromJson(jsonCode: string, label: string, raw: string): string {
+  const found = extractCodeBlock(jsonCode);
+  if (!found) {
+    throw new AIParseError(
+      looksTruncated(jsonCode)
+        ? 'The model ran out of room and its answer was cut off mid-pattern.'
+        : 'The model did not return a usable pattern.',
+      raw,
+    );
+  }
+  return finalizeCode(found, label, raw);
+}
+
 function finalizeCode(code: string, label: string, raw: string): string {
   const result = sanitizeGeneratedCode(code, label);
   if (result.allLayersDead) {
@@ -362,7 +400,7 @@ export function parseGeneratedTrack(
   const json = extractJsonFromOutput<Partial<AIGeneratedTrack>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), 'generated track', rawOutput),
+      code: codeFromJson(json.code, 'generated track', rawOutput),
       title: json.title || 'Untitled Pattern',
       bpm: sensibleBpm(Number(json.bpm), defaultBpm),
       genre: json.genre || defaultGenre,
@@ -414,7 +452,7 @@ export function parseTweakResult(rawOutput: string): AITweakResult {
   const json = extractJsonFromOutput<Partial<AITweakResult>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), 'tweaked pattern', rawOutput),
+      code: codeFromJson(json.code, 'tweaked pattern', rawOutput),
       summary: json.summary || 'Pattern updated.',
       diffHighlights: Array.isArray(json.diffHighlights) ? json.diffHighlights : [],
       liveTweaks: Array.isArray(json.liveTweaks) ? json.liveTweaks : [],
@@ -503,7 +541,7 @@ export function parseVariationResult(
       title: json.title || recipe.title,
       type: recipe.type,
       description: json.summary || recipe.description,
-      code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), `variation "${recipe.type}"`, rawOutput),
+      code: codeFromJson(json.code, `variation "${recipe.type}"`, rawOutput),
       createdAt: Date.now(),
     };
   }

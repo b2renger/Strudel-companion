@@ -149,7 +149,14 @@ export function extractBpmFromPrompt(text: string): number | null {
   const patterns = [
     /(\d{2,3})\s*(?:bpm|beats\s+per\s+minute)\b/i,
     /\bbpm\b\s*[:=]?\s*(\d{2,3})/i,
-    /\bat\s+(\d{2,3})\b(?!\s*%)/i,
+    // A bare "at 130". The exclusion list matters: without it "the reverb at
+    // 60 percent" set the tempo to 60 and moved the user's slider for them.
+    //
+    // The whitespace belongs INSIDE the lookahead. Written as
+    // `(\d{2,3})\s*(?!percent|…)` the engine simply backtracks `\s*` to zero
+    // width, checks the space character against the alternation, finds no
+    // match and happily succeeds — so the exclusion never fired at all.
+    /\bat\s+(\d{2,3})\b(?!\s*(?:%|percent|per\s?cent|steps?|bars?|beats?|notes?|seconds?|secs?|ms\b|hz|khz|db|cents?|degrees?))/i,
   ];
   for (const re of patterns) {
     const m = re.exec(text);
