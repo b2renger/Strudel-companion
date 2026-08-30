@@ -19,6 +19,11 @@ import {
   buildVariationPrompt,
   buildFixPrompt,
   STRUDEL_SYSTEM_PROMPT,
+  STRUDEL_SYNTAX_CARD,
+  buildCompactGeneratePrompt,
+  buildCompactTweakPrompt,
+  buildCompactVariationPrompt,
+  buildRetryPrompt,
 } from '../ai/prompts';
 import {
   parseGeneratedTrack,
@@ -27,6 +32,7 @@ import {
   parseVariationResult,
 } from '../ai/outputParser';
 import { getModelSpec, DEFAULT_MODEL_ID } from '../ai/models';
+import { AIParseError } from '../ai/outputParser';
 import { AIWorkerRequest, AIWorkerResponse } from '../types';
 import { log, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
 
@@ -140,9 +146,13 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
   // Gemma 2's chat template has no system turn, so its system text must be
   // folded into the user message. Models that ARE system-tuned lose quality
   // if we do the same to them, so this is decided per model.
+  // Small models get the compact syntax card as their system message; the
+  // full rulebook crowds out the actual request and degrades their output.
+  const systemText = spec?.promptStyle === 'compact' ? STRUDEL_SYNTAX_CARD : STRUDEL_SYSTEM_PROMPT;
+
   const messages = spec?.supportsSystemRole
     ? ([
-        { role: 'system', content: STRUDEL_SYSTEM_PROMPT },
+        { role: 'system', content: systemText },
         { role: 'user', content: userPrompt },
       ] as any)
     : ([{ role: 'user', content: userPrompt }] as any);
@@ -246,15 +256,37 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
       case 'generate': {
         await ensureEngine(targetModel, id);
         const { prompt, style, complexity, tempo } = payload;
-        const raw = await complete(id, buildGeneratePrompt(prompt, style, complexity, tempo), 1400);
-        send({ id, type: 'result', data: parseGeneratedTrack(raw, prompt, style, tempo) });
+        const compact = getModelSpec(loadedModelId || '')?.promptStyle === 'compact';
+        const build = compact ? buildCompactGeneratePrompt : buildGeneratePrompt;
+
+        let raw = await complete(id, build(prompt, style, complexity, tempo), 1400);
+        let parsed;
+        try {
+          parsed = parseGeneratedTrack(raw, prompt, style, tempo);
+        } catch (err) {
+          if (!(err instanceof AIParseError)) throw err;
+          // One retry with every secondary instruction removed. A model that
+          // fumbled the multi-part format will usually manage "just the code",
+          // and a second attempt is far cheaper than failing to the fallback.
+          log('worker', 'first reply was unparseable — retrying with a code-only prompt');
+          raw = await complete(id, buildRetryPrompt(prompt, tempo), 1200);
+          parsed = parseGeneratedTrack(raw, prompt, style, tempo);
+        }
+        send({ id, type: 'result', data: parsed });
         break;
       }
 
       case 'tweak': {
         await ensureEngine(targetModel, id);
         const { currentCode, instruction } = payload;
-        const raw = await complete(id, buildTweakPrompt(currentCode, instruction), 1400);
+        const compact = getModelSpec(loadedModelId || '')?.promptStyle === 'compact';
+        const raw = await complete(
+          id,
+          compact
+            ? buildCompactTweakPrompt(currentCode, instruction)
+            : buildTweakPrompt(currentCode, instruction),
+          1400,
+        );
         send({ id, type: 'result', data: parseTweakResult(raw) });
         break;
       }
@@ -272,9 +304,12 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
       case 'suggest_variations': {
         await ensureEngine(targetModel, id);
         const { currentCode, mood, recipe } = payload;
+        const compact = getModelSpec(loadedModelId || '')?.promptStyle === 'compact';
         const raw = await complete(
           id,
-          buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
+          compact
+            ? buildCompactVariationPrompt(currentCode, recipe.type, recipe.description)
+            : buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
           1400,
         );
         send({ id, type: 'result', data: parseVariationResult(raw, recipe) });

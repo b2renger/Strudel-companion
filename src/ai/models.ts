@@ -38,6 +38,16 @@ export interface WebGPUModelSpec {
    * lose quality if we do the same to them.
    */
   supportsSystemRole: boolean;
+  /**
+   * How much prompt this model can usefully absorb.
+   *
+   * 'compact' trims the system prompt to a syntax card plus one worked
+   * example. Small instruct models follow a short prompt with a concrete
+   * example far better than a long list of rules — with the full prompt they
+   * tend to answer in prose, or drift from the requested output format, which
+   * surfaces as "the model did not return a usable pattern".
+   */
+  promptStyle: 'compact' | 'full';
   /** Shown on the model card. */
   description: string;
 }
@@ -45,6 +55,7 @@ export interface WebGPUModelSpec {
 export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   {
     id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
     name: 'SmolLM2 360M',
     vramMB: 376,
     needsF16: true,
@@ -54,6 +65,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
     name: 'Llama 3.2 1B',
     vramMB: 879,
     needsF16: true,
@@ -63,6 +75,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
     name: 'Qwen 2.5 0.5B',
     vramMB: 945,
     needsF16: true,
@@ -72,6 +85,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'Llama-3.2-1B-Instruct-q4f32_1-MLC',
+    promptStyle: 'compact' as const,
     name: 'Llama 3.2 1B (f32)',
     vramMB: 1129,
     needsF16: false,
@@ -82,6 +96,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'gemma-2-2b-it-q4f16_1-MLC-1k',
+    promptStyle: 'compact' as const,
     name: 'Gemma 2 2B (1k context)',
     vramMB: 1583,
     needsF16: true,
@@ -92,6 +107,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
+    promptStyle: 'compact' as const,
     name: 'SmolLM2 1.7B',
     vramMB: 1774,
     needsF16: true,
@@ -101,6 +117,7 @@ export const WEBGPU_MODELS: WebGPUModelSpec[] = [
   },
   {
     id: 'gemma-2-2b-it-q4f16_1-MLC',
+    promptStyle: 'full' as const,
     name: 'Gemma 2 2B',
     vramMB: 1895,
     needsF16: true,

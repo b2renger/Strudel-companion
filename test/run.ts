@@ -24,6 +24,10 @@ import {
 } from '../src/ai/outputParser.ts';
 import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
 import {
+  buildCompactGeneratePrompt,
+  STRUDEL_SYNTAX_CARD,
+} from '../src/ai/prompts.ts';
+import {
   parseStrudelCodeToTokens,
   findTokenExactRange,
   removeBlockInCode,
@@ -127,7 +131,41 @@ test('prose containing "s(" is NOT accepted as code', () => {
   assert.equal(extractCodeBlock('This pattern uses s( to make sounds.'), null);
 });
 
+// These are the shapes a 0.5B-2B model actually emits. Each one previously
+// produced "the model did not return a usable pattern", or smuggled prose into
+// the editor as code.
+test('messy small-model output still yields clean code', () => {
+  const cases: Array<[string, string]> = [
+    ['prose before and after', 'Sure! Here you go:\nstack(\n  s("bd*4")\n)\nHope you like it!'],
+    ['js fence tag', '```js\nstack(\n  s("bd*4")\n)\n```'],
+    ['no language tag', '```\nstack(s("bd*4"))\n```'],
+    ['unclosed fence', '```strudel\nstack(\n  s("bd*4")\n)'],
+    ['no fence at all', 'stack(\n  s("bd*4")\n)'],
+    ['indented block', 'Sure!\n\n    stack(\n      s("bd*4")\n    )\n\nThat is a kick.'],
+    ['parens in the trailing prose', 'stack(\n  s("bd*4")\n)\nThis uses s() for samples (nice).'],
+  ];
+  for (const [label, raw] of cases) {
+    const code = extractCodeBlock(raw);
+    assert.ok(code, `${label}: extracted nothing`);
+    assert.match(code!, /^stack\(/, `${label}: did not start at the pattern`);
+    assert.equal(
+      code!.endsWith(')'),
+      true,
+      `${label}: trailing text was included — got ${JSON.stringify(code)}`,
+    );
+    assert.equal(validateStructure(code!).ok, true, `${label}: extracted code does not validate`);
+  }
+});
+
+test('an unclosed fence is not mistaken for truncation', () => {
+  // Small models forget the closing fence constantly. If the code inside is
+  // complete, that is a formatting slip, not a cut-off answer.
+  const r = parseGeneratedTrack('```strudel\nstack(\n  s("bd*4")\n)');
+  assert.match(r.code, /^stack\(/);
+});
+
 test('truncated output is detected, not repaired', () => {
+  // Genuinely incomplete: the parentheses never balance.
   assert.throws(
     () => parseGeneratedTrack('```strudel\nstack(\n  s("bd*4"),'),
     (e: any) => e instanceof AIParseError && /cut off/i.test(e.message),
@@ -272,6 +310,35 @@ test('an unresolvable token yields a no-op range rather than a wrong edit', () =
   const tok = { ...allTokens[0], raw: 'zzz-not-present', occurrence: 0 };
   const range = findTokenExactRange('s("bd*4")', tok as any);
   assert.equal(range.start, range.end, 'expected a zero-width range');
+});
+
+// ---------------------------------------------------------------------------
+// Prompts — we must not teach the model syntax we reject
+// ---------------------------------------------------------------------------
+
+test('every code sample inside the prompts is itself valid', () => {
+  const prompt = buildCompactGeneratePrompt('dark techno', 'Techno', 'Intermediate', 130);
+  const blocks = [...prompt.matchAll(/```strudel\n([\s\S]*?)```/g)].map((m) => m[1]);
+  // The syntax card's bare example plus the fenced worked example.
+  const bare = STRUDEL_SYNTAX_CARD.match(/(stack\([\s\S]*?\n\))/);
+  if (bare) blocks.push(bare[1]);
+
+  assert.ok(blocks.length >= 2, `expected at least 2 samples, found ${blocks.length}`);
+  for (const block of blocks) {
+    const v = validateStructure(block.trim());
+    assert.equal(v.ok, true, `prompt sample is invalid (${v.error}):\n${block}`);
+    // And it must be extractable by our own parser.
+    assert.ok(extractCodeBlock(block), 'prompt sample is not extractable');
+  }
+});
+
+test('prompt vocabulary lists match the engine exactly', () => {
+  for (const d of DRUM_VOICES) {
+    assert.ok(STRUDEL_SYNTAX_CARD.includes(d), `syntax card omits drum ${d}`);
+  }
+  for (const v of SYNTH_VOICES) {
+    assert.ok(STRUDEL_SYNTAX_CARD.includes(v), `syntax card omits voice ${v}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

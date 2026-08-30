@@ -20,7 +20,7 @@
  *    decoding (Gemini's `responseSchema`) use their own schema instead.
  */
 
-import { buildVocabularyPromptSection } from '../audio/vocabulary';
+import { buildVocabularyPromptSection, DRUM_VOICES, SYNTH_VOICES } from '../audio/vocabulary';
 
 /**
  * Skill-level calibration. Ported from the Express server's prompt, which was
@@ -219,4 +219,128 @@ stack(
 \`\`\`
 SUMMARY: one sentence naming the syntax error you fixed
 CHANGED: the specific correction you made`;
+}
+
+// ---------------------------------------------------------------------------
+// Compact prompts for small local models
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything a 0.5B–2B model needs, and nothing else.
+ *
+ * The full system prompt is ~550 tokens of rules. Small instruct models do not
+ * absorb that: they answer in prose, invent syntax, or drift from the output
+ * format — which reaches the user as "the model did not return a usable
+ * pattern". A short syntax card plus ONE complete worked example is
+ * dramatically more effective, because it demonstrates the contract instead of
+ * describing it.
+ */
+export const STRUDEL_SYNTAX_CARD = `Strudel is a live-coding music language. A pattern looks like:
+
+stack(
+  s("bd*4"),
+  s("~ cp ~ cp"),
+  s("hh*8").gain(0.6),
+  note("<c2 eb2 g2 bb1>").s("sawtooth").lpf(1200)
+)
+
+RULES:
+- s("...") plays drums. Allowed drums ONLY: ${DRUM_VOICES.join(' ')}
+- note("...") plays pitches like c2, eb3, f#4. Add .s("...") to choose the voice.
+  Allowed voices ONLY: ${SYNTH_VOICES.join(' ')}
+- bd*4 = 4 times per cycle. bd(3,8) = 3 hits spread over 8 steps.
+- <a b c> = one per cycle. [a b] = squeeze into one step. ~ = silence.
+- Effects take NUMBERS: .gain(0.8) .lpf(1200) .room(0.4) .delay(0.25) .decay(0.3)
+- Never write .pan("0 1") — a quoted effect argument breaks the layer.
+- Never invent drum or voice names that are not listed above.`;
+
+/** One complete, correctly formatted answer. Small models copy the shape. */
+const GENERATE_EXAMPLE = `EXAMPLE — for "dark rolling techno at 130 bpm" you would reply EXACTLY like this:
+
+\`\`\`strudel
+stack(
+  s("bd*4").gain(0.95),
+  s("~ cp ~ cp").gain(0.8),
+  s("hh(7,16)").gain(0.55),
+  note("<c2 c2 eb2 g2>").s("sawtooth").lpf(900).decay(0.2).gain(0.9),
+  note("<[c3 eb3 g3] [ab2 c3 eb3]>").s("pluck").lpf(1800).room(0.3).gain(0.6)
+)
+\`\`\`
+TITLE: Iron Corridor
+BPM: 130
+GENRE: Techno
+WHY: A driving four-on-the-floor with a dark C minor bass and sparse stabs.`;
+
+export function buildCompactGeneratePrompt(
+  prompt: string,
+  style: string,
+  complexity: string,
+  tempo: number,
+): string {
+  return `${STRUDEL_SYNTAX_CARD}
+
+${GENERATE_EXAMPLE}
+
+NOW YOUR TURN.
+Request: "${prompt}"
+Style: ${style || 'Electronic'}
+Complexity: ${complexityLine(complexity)}
+BPM: ${tempo || 120}
+
+Reply with the code block first, then TITLE, BPM, GENRE and WHY lines.
+Write nothing else — no greeting, no explanation outside those lines.`;
+}
+
+export function buildCompactTweakPrompt(currentCode: string, instruction: string): string {
+  return `${STRUDEL_SYNTAX_CARD}
+
+Here is an existing pattern:
+\`\`\`strudel
+${currentCode}
+\`\`\`
+
+Change it so that: "${instruction}"
+
+Reply with the COMPLETE updated pattern in a \`\`\`strudel block, then one
+SUMMARY line. Write nothing else.
+
+\`\`\`strudel
+stack(
+  ...the full updated pattern...
+)
+\`\`\`
+SUMMARY: what you changed`;
+}
+
+export function buildCompactVariationPrompt(
+  currentCode: string,
+  variationType: string,
+  description: string,
+): string {
+  return `${STRUDEL_SYNTAX_CARD}
+
+Here is an existing pattern:
+\`\`\`strudel
+${currentCode}
+\`\`\`
+
+Rewrite it as a "${variationType}" variation — ${description}.
+
+Reply with the COMPLETE new pattern in a \`\`\`strudel block, then one TITLE
+line. Write nothing else.`;
+}
+
+/**
+ * Last-resort prompt, used to retry once after a parse failure.
+ *
+ * Strips away every secondary instruction: no labels, no explanation, just the
+ * code. A model that fumbled the multi-part format will usually manage this.
+ */
+export function buildRetryPrompt(prompt: string, tempo: number): string {
+  return `${STRUDEL_SYNTAX_CARD}
+
+Write a Strudel pattern for: "${prompt}" at ${tempo || 120} BPM.
+
+Output ONLY the code, starting with stack( and ending with ). No code fence, no
+title, no explanation, no other text.`;
 }

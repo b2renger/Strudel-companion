@@ -30,47 +30,107 @@ export class AIParseError extends Error {
   }
 }
 
-/** A fenced block that never closed means the model was cut off mid-answer. */
-function assertNotTruncated(text: string): void {
-  const fences = (text.match(/```/g) || []).length;
-  if (fences % 2 !== 0) {
-    throw new AIParseError(
-      'The model ran out of room and its answer was cut off mid-pattern.',
-      text,
-    );
+/**
+ * From `start`, returns the substring up to the point where parentheses
+ * balance — and no further.
+ *
+ * This is what lets us discard the chatter small models wrap around their
+ * answers. Scanning to the end of the string instead meant `stack(...)\nHope
+ * you like it!` came back with the prose attached, which then failed
+ * validation and looked to the user like the model had produced nonsense.
+ */
+function balancedSlice(text: string, start: number): string | null {
+  let depth = 0;
+  let quote: string | null = null;
+  let opened = false;
+
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (c === '(') {
+      depth++;
+      opened = true;
+    } else if (c === ')') {
+      depth--;
+      if (opened && depth === 0) return text.slice(start, i + 1);
+      if (depth < 0) return null;
+    }
   }
+  return null; // never balanced — genuinely incomplete
+}
+
+/** Longest-first so `sound(` is not matched as `s`. */
+const PATTERN_START = /(?:^|\n)([ \t]*)((?:stack|sound|note|n|s)\s*\()/;
+
+function extractFromCandidate(candidate: string): string | null {
+  const m = PATTERN_START.exec(candidate);
+  if (!m) return null;
+  const identStart = m.index + (m[0].length - m[2].length);
+  const slice = balancedSlice(candidate, identStart);
+  return slice ? slice.trim() : null;
 }
 
 /**
- * Extract the runnable pattern.
+ * True when the text opened something it never closed — the signature of a
+ * reply cut off by the token limit, as opposed to one that simply is not code.
+ */
+function looksTruncated(text: string): boolean {
+  if ((text.match(/```/g) || []).length % 2 === 1) {
+    // An unclosed fence alone is NOT proof: small models routinely forget the
+    // closing fence on an otherwise complete answer. Only call it truncated if
+    // the code inside also fails to balance.
+    return extractFromCandidate(text) === null;
+  }
+  let depth = 0;
+  for (const c of text) {
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+  }
+  return depth > 0;
+}
+
+/**
+ * Extracts the runnable pattern from whatever the model wrapped around it.
  *
- * Deliberately strict. The old implementation ended with
- * `if (text.includes('s(')) return text.trim()`, which matches almost any
- * English sentence containing "s(" — that catch-all is how a raw JSON blob
- * ended up in the editor as "code".
+ * Tries, in order: each closed fenced block, an unterminated fence, then the
+ * raw text. In every case it returns only the balanced expression, so preamble
+ * and trailing commentary are discarded rather than pasted into the editor.
+ *
+ * Deliberately does NOT fall back to "the text contains s(" — that old
+ * catch-all matched almost any English sentence, and is how a raw JSON blob
+ * once ended up in the user's editor as code.
  */
 export function extractCodeBlock(text: string): string | null {
   if (!text) return null;
 
-  const fenced = text.match(/```(?:strudel|javascript|js)?\s*\n?([\s\S]*?)```/i);
-  if (fenced && fenced[1] && fenced[1].trim()) {
-    return fenced[1].trim();
+  const candidates: string[] = [];
+
+  // Closed fences, with any language tag or none.
+  for (const m of text.matchAll(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/g)) {
+    if (m[1]?.trim()) candidates.push(m[1]);
   }
 
-  // Unfenced, but starting on a line that opens a real Strudel expression.
-  const bare = text.match(/^[ \t]*((?:stack|s|note|n|sound)\s*\([\s\S]*)$/m);
-  if (bare && bare[1]) {
-    const candidate = bare[1].trim();
-    // Balanced parentheses is a cheap proxy for "this is a whole expression".
-    let depth = 0;
-    for (const ch of candidate) {
-      if (ch === '(') depth++;
-      else if (ch === ')') depth--;
-      if (depth < 0) break;
-    }
-    if (depth === 0) return candidate;
+  // An unterminated fence. Common, and not by itself a failure — small models
+  // routinely forget the closing fence on an otherwise complete answer.
+  if ((text.match(/```/g) || []).length % 2 === 1) {
+    const open = text.lastIndexOf('```');
+    candidates.push(text.slice(open + 3).replace(/^[a-zA-Z]*[ \t]*\r?\n?/, ''));
   }
 
+  // Unfenced output.
+  candidates.push(text);
+
+  for (const candidate of candidates) {
+    const found = extractFromCandidate(candidate);
+    if (found) return found;
+  }
   return null;
 }
 
@@ -139,8 +199,6 @@ export function parseGeneratedTrack(
   defaultGenre = 'Electronic',
   defaultBpm = 120,
 ): AIGeneratedTrack {
-  assertNotTruncated(rawOutput);
-
   // Gemini path: schema-constrained JSON.
   const json = extractJsonFromOutput<Partial<AIGeneratedTrack>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
@@ -158,7 +216,12 @@ export function parseGeneratedTrack(
   // Local-model path: fenced code + labels.
   const code = extractCodeBlock(rawOutput);
   if (!code) {
-    throw new AIParseError('The model did not return a usable pattern.', rawOutput);
+    throw new AIParseError(
+      looksTruncated(rawOutput)
+        ? 'The model ran out of room and its answer was cut off mid-pattern.'
+        : 'The model did not return a usable pattern.',
+      rawOutput,
+    );
   }
 
   const labels = readLabels(rawOutput);
@@ -185,8 +248,6 @@ export function parseGeneratedTrack(
 }
 
 export function parseTweakResult(rawOutput: string): AITweakResult {
-  assertNotTruncated(rawOutput);
-
   const json = extractJsonFromOutput<Partial<AITweakResult>>(rawOutput);
   if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
@@ -199,7 +260,12 @@ export function parseTweakResult(rawOutput: string): AITweakResult {
 
   const code = extractCodeBlock(rawOutput);
   if (!code) {
-    throw new AIParseError('The model did not return an updated pattern.', rawOutput);
+    throw new AIParseError(
+      looksTruncated(rawOutput)
+        ? 'The model ran out of room before finishing the updated pattern.'
+        : 'The model did not return an updated pattern.',
+      rawOutput,
+    );
   }
 
   const labels = readLabels(rawOutput);
@@ -212,8 +278,6 @@ export function parseTweakResult(rawOutput: string): AITweakResult {
 }
 
 export function parseExplanationResult(rawOutput: string): AIExplanationResult {
-  assertNotTruncated(rawOutput);
-
   const json = extractJsonFromOutput<Partial<AIExplanationResult>>(rawOutput);
   if (json && (json.summary || Array.isArray(json.lineByLine))) {
     return {
@@ -263,8 +327,6 @@ export function parseVariationResult(
   rawOutput: string,
   recipe: { type: string; title: string; description: string },
 ): AIVariation {
-  assertNotTruncated(rawOutput);
-
   const newId = () =>
     `var-${recipe.type}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
@@ -285,7 +347,12 @@ export function parseVariationResult(
 
   const code = extractCodeBlock(rawOutput);
   if (!code) {
-    throw new AIParseError('The model did not return a usable variation.', rawOutput);
+    throw new AIParseError(
+      looksTruncated(rawOutput)
+        ? 'The model ran out of room before finishing the variation.'
+        : 'The model did not return a usable variation.',
+      rawOutput,
+    );
   }
 
   const labels = readLabels(rawOutput);

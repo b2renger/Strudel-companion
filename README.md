@@ -255,8 +255,12 @@ error messages and truthful REPL export without shipping a sample pack.
 ## Known limitations
 
 - Small local models (under ~1B parameters) produce simple and sometimes
-  musically dull patterns. This is inherent to their size, not a bug. Gemini or
-  a 2B model is noticeably better if your device can run one.
+  musically dull patterns, and occasionally fail to follow the output format at
+  all. They are given a compact syntax card plus a worked example rather than
+  the full rulebook, and a failed reply is retried once with a code-only
+  prompt — but a 2B model or Gemini is noticeably better if you can run one.
+  When a local model does fail, the badge says so and names the reason;
+  `strudel.debug(true)` shows the raw reply that could not be parsed.
 - Local generation on a phone is slow — 30 to 90 seconds is normal — and the
   browser may reclaim memory mid-run.
 - The token inspector understands the subset of mini-notation listed above.
