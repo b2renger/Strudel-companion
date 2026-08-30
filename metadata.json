@@ -1,6 +1,5 @@
 {
   "name": "Strudel AI Live Studio",
-  "description": "Algorithmic music live coding studio using Strudel notation with AI prompting to generate, explain, and tweak music patterns in real time.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "description": "Algorithmic music live coding studio using Strudel notation with AI prompting to generate, explain, and tweak music patterns in real time. Runs entirely in the browser.",
+  "requestFramePermissions": []
 }

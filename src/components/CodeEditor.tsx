@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { statusText } from '../ai/progressText';
 import { AIEngineProgress } from '../types';
 import {
   Play,
@@ -119,21 +120,39 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     return parseStrudelCodeToTokens(safeCode);
   }, [safeCode]);
 
+  // Latest code, read inside the subscriber without making it a dependency.
+  const safeCodeRef = useRef(safeCode);
+  safeCodeRef.current = safeCode;
+  const flashTimerRef = useRef<number | null>(null);
+
   // Subscribe to Audio Engine evaluation events for synchronized visual feedback
   useEffect(() => {
     const unsubscribe = audioEngine.subscribeEval((ev: EvalEvent) => {
       setLastEvalEvent(ev);
-      if (ev.success) {
-        setLastEvaluatedCode(ev.code || safeCode);
-        setIsEvalFlashing(true);
-        const timer = setTimeout(() => {
-          setIsEvalFlashing(false);
-        }, 1600);
-        return () => clearTimeout(timer);
-      }
+      if (!ev.success) return;
+
+      setLastEvaluatedCode(ev.code || safeCodeRef.current);
+      setIsEvalFlashing(true);
+
+      // The timer is held in a ref and cleared before each new one.
+      // It used to be cancelled by a function returned from THIS callback —
+      // but `emitEval` discards the subscriber's return value, so nothing ever
+      // cleared it and rapid evaluations stacked overlapping 1600ms timers
+      // that fought over `isEvalFlashing`.
+      if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => {
+        flashTimerRef.current = null;
+        setIsEvalFlashing(false);
+      }, 1600);
     });
-    return unsubscribe;
-  }, [safeCode]);
+
+    // Empty deps: this used to re-subscribe on every keystroke because
+    // `safeCode` was a dependency, churning the callback Set for no reason.
+    return () => {
+      unsubscribe();
+      if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+    };
+  }, []);
 
   // Safe direct evaluation function ensuring current buffer is used
   const triggerSafeEvaluate = useCallback((codeToEval?: string) => {
@@ -615,7 +634,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 ? 'bg-emerald-500 text-white ring-2 ring-emerald-500 scale-105'
                 : 'bg-emerald-500 hover:bg-emerald-500/90 text-white'
             }`}
-            title="Evaluate pattern (Ctrl+Enter)"
+            title="Evaluate pattern (Ctrl+Enter)" aria-label="Evaluate pattern (Ctrl+Enter)"
           >
             {isEvalFlashing ? (
               <>
@@ -634,7 +653,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           <button
             onClick={onHush}
             className="px-2.5 py-1 rounded-full bg-gray-100 hover:bg-pink-500/20 text-gray-900 hover:text-pink-600 border border-gray-200 hover:border-pink-500/40 text-[10px] font-bold flex items-center gap-1 transition-all uppercase"
-            title="Stop audio (Ctrl+.)"
+            title="Stop audio (Ctrl+.)" aria-label="Stop audio (Ctrl+.)"
           >
             <Square className="w-2.5 h-2.5 fill-current" />
             <span>Hush</span>
@@ -656,7 +675,16 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       )}
 
       {/* Editor Main Header Toolbar */}
-      <div className="h-10 px-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-2 text-xs">
+      {/*
+        `min-h-10` + `flex-wrap`, not a fixed `h-10` with no wrap.
+
+        This row holds ~620px of controls and sits inside an `overflow-hidden`
+        parent, so on a 390px phone (334px of usable width) everything past the
+        fold was clipped, not scrollable. The last item in a `justify-between`
+        row is the primary "EVAL" button — the single most important control in
+        a live-coding editor — so it was the first thing to disappear.
+      */}
+      <div className="min-h-10 py-1 px-3 bg-gray-50 border-b border-gray-200 flex items-center flex-wrap justify-between gap-x-2 gap-y-1.5 text-xs">
         {/* Left: View Mode Switcher [Highlighting | Text Code | Visual Nodes] */}
         <div className="flex items-center gap-1.5">
           <div className="flex items-center bg-[var(--app-card-1)] p-0.5 rounded-lg border border-gray-200">
@@ -667,10 +695,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   ? 'bg-pink-500 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
-              title="Raw text keyboard editor"
+              title="Raw text keyboard editor" aria-label="Raw text keyboard editor"
             >
               <Code2 className="w-3 h-3" />
-              <span>Editor</span>
+              <span className="hidden sm:inline">Editor</span>
             </button>
 
             <button
@@ -680,11 +708,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   ? 'bg-emerald-500 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
-              title="Interactive syntax-highlighted code with touch-to-edit chips"
+              title="Interactive syntax-highlighted code with touch-to-edit chips" aria-label="Interactive syntax-highlighted code with touch-to-edit chips"
             >
               <Sparkles className="w-3 h-3" />
-              <span>Highlighter</span>
-              <span className="bg-black/20 text-current text-[8px] px-1 py-0.2 rounded ml-0.5 hidden sm:inline">
+              <span className="hidden sm:inline">Highlighter</span>
+              <span className="bg-black/20 text-current text-[8px] px-1 py-0.5 rounded ml-0.5 hidden sm:inline">
                 Touch
               </span>
             </button>
@@ -696,7 +724,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   ? 'bg-cyan-500 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
-              title="Visual track lane nodes"
+              title="Visual track lane nodes" aria-label="Visual track lane nodes"
             >
               <Layers className="w-3 h-3" />
               <span className="hidden sm:inline">Tracks</span>
@@ -711,7 +739,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 ? 'bg-emerald-500 text-white border-emerald-600 shadow-xs'
                 : 'bg-gray-100 hover:bg-gray-200 text-gray-600 border-gray-200'
             }`}
-            title="Auto-evaluate on every edit (debounced)"
+            title="Auto-evaluate on every edit (debounced)" aria-label="Auto-evaluate on every edit (debounced)"
           >
             <Zap className={`w-2.5 h-2.5 ${autoEvalEnabled ? 'fill-current animate-pulse' : ''}`} />
             <span>Auto-Eval: {autoEvalEnabled ? 'ON' : 'OFF'}</span>
@@ -749,7 +777,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               onClick={handleUndo}
               disabled={!canUndo}
               className="p-1.5 text-gray-900 hover:text-emerald-600 hover:bg-gray-200 disabled:opacity-25 transition-colors"
-              title="Undo (Ctrl+Z)"
+              title="Undo (Ctrl+Z)" aria-label="Undo (Ctrl+Z)"
             >
               <Undo2 className="w-3 h-3" />
             </button>
@@ -758,7 +786,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               onClick={handleRedo}
               disabled={!canRedo}
               className="p-1.5 text-gray-900 hover:text-emerald-600 hover:bg-gray-200 disabled:opacity-25 transition-colors"
-              title="Redo (Ctrl+Shift+Z)"
+              title="Redo (Ctrl+Shift+Z)" aria-label="Redo (Ctrl+Shift+Z)"
             >
               <Redo2 className="w-3 h-3" />
             </button>
@@ -769,7 +797,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <button
               onClick={() => setFontSize((s) => Math.max(11, s - 1))}
               className="px-1.5 py-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 transition-colors"
-              title="Decrease Font Size"
+              title="Decrease Font Size" aria-label="Decrease Font Size"
             >
               <ZoomOut className="w-3 h-3" />
             </button>
@@ -777,7 +805,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <button
               onClick={() => setFontSize((s) => Math.min(18, s + 1))}
               className="px-1.5 py-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 transition-colors"
-              title="Increase Font Size"
+              title="Increase Font Size" aria-label="Increase Font Size"
             >
               <ZoomIn className="w-3 h-3" />
             </button>
@@ -797,7 +825,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <button
               onClick={onOpenExportRepl}
               className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 border border-emerald-500/30 flex items-center gap-1 transition-colors"
-              title="Send code pattern to official strudel.cc editor"
+              title="Send code pattern to official strudel.cc editor" aria-label="Send code pattern to official strudel.cc editor"
             >
               <Globe className="w-3 h-3 text-emerald-600" />
               <span className="hidden sm:inline font-semibold">strudel.cc</span>
@@ -808,7 +836,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           <button
             onClick={handleCopy}
             className="px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-900 border border-gray-200 flex items-center gap-1 transition-colors"
-            title="Copy Strudel Code"
+            title="Copy Strudel Code" aria-label="Copy Strudel Code"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-gray-900" />}
             <span className="hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
@@ -825,7 +853,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-[0_0_12px_rgba(245,158,11,0.4)]'
                 : 'bg-emerald-500 hover:bg-emerald-500/90 text-white'
             }`}
-            title="Evaluate pattern (Ctrl+Enter)"
+            title="Evaluate pattern (Ctrl+Enter)" aria-label="Evaluate pattern (Ctrl+Enter)"
           >
             {isEvalFlashing ? (
               <>
@@ -878,7 +906,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         <button
           onClick={() => handleOpenAddBlock(null)}
           className="px-2 py-0.5 rounded-lg bg-pink-500/15 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/30 text-[10px] font-bold uppercase transition-all flex items-center gap-1 shrink-0 active:scale-95 shadow-2xs"
-          title="Add block of choice behind any block or layer"
+          title="Add block of choice behind any block or layer" aria-label="Add block of choice behind any block or layer"
         >
           <Plus className="w-3 h-3 stroke-[2.5]" />
           <span>+ Add Block</span>
@@ -1018,7 +1046,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                         handleOpenAddBlock(lastTok, layer.lineStart);
                       }}
                       className="px-2 py-1 rounded-md bg-gray-100 hover:bg-pink-500/20 text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/30 text-xs font-bold flex items-center gap-1 transition-all active:scale-95"
-                      title="Add sound, rhythm, pitch, or effect to this layer"
+                      title="Add sound, rhythm, pitch, or effect to this layer" aria-label="Add sound, rhythm, pitch, or effect to this layer"
                     >
                       <Plus className="w-3 h-3 text-pink-500" />
                       <span>+ Block</span>
@@ -1178,35 +1206,35 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   <button
                     onClick={handleIndent}
                     className="h-7 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-emerald-500 active:text-white text-gray-900 border border-gray-200 text-[11px] flex items-center gap-1 transition-all shrink-0 active:scale-95"
-                    title="Indent (+2 spaces)"
+                    title="Indent (+2 spaces)" aria-label="Indent (+2 spaces)"
                   >
                     <span>⇥ Indent</span>
                   </button>
                   <button
                     onClick={handleUnindent}
                     className="h-7 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-emerald-500 active:text-white text-gray-900 border border-gray-200 text-[11px] flex items-center gap-1 transition-all shrink-0 active:scale-95"
-                    title="Unindent (-2 spaces)"
+                    title="Unindent (-2 spaces)" aria-label="Unindent (-2 spaces)"
                   >
                     <span>⇤ Outdent</span>
                   </button>
                   <button
                     onClick={handleToggleComment}
                     className="h-7 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-emerald-500 active:text-white text-gray-900 border border-gray-200 text-[11px] flex items-center gap-1 transition-all shrink-0 active:scale-95"
-                    title="Toggle // Comment"
+                    title="Toggle // Comment" aria-label="Toggle // Comment"
                   >
                     <span>// Comment</span>
                   </button>
                   <button
                     onClick={handleDuplicateLine}
                     className="h-7 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-emerald-500 active:text-white text-gray-900 border border-gray-200 text-[11px] flex items-center gap-1 transition-all shrink-0 active:scale-95"
-                    title="Duplicate Line"
+                    title="Duplicate Line" aria-label="Duplicate Line"
                   >
                     <span>⧉ Duplicate</span>
                   </button>
                   <button
                     onClick={handleSelectAll}
                     className="h-7 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-emerald-500 active:text-white text-gray-900 border border-gray-200 text-[11px] flex items-center gap-1 transition-all shrink-0 active:scale-95"
-                    title="Select All Code"
+                    title="Select All Code" aria-label="Select All Code"
                   >
                     <span>⛶ Select All</span>
                   </button>
@@ -1290,18 +1318,21 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
       {/* Error Callout Banner with AI Auto-Fix */}
       {errorMessage && (
-        <div className="bg-[#241315] border-t border-pink-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-2 text-pink-600">
-            <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-ping" />
-            <span className="font-bold text-[10px] uppercase">Eval Error:</span>
-            <span className="text-gray-900 text-[11px]">{errorMessage}</span>
+        // Was `text-gray-900` (#111827) on `bg-[#241315]` — a contrast ratio of
+        // 1.08:1, i.e. the one message explaining why the music stopped was
+        // invisible. Now a light-themed banner matching the rest of the UI.
+        <div role="alert" className="bg-red-50 border-t border-red-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-start gap-2 text-red-800 min-w-0">
+            <span className="w-1.5 h-1.5 mt-1.5 shrink-0 rounded-full bg-red-600 motion-safe:animate-ping" />
+            <span className="font-bold text-[10px] uppercase shrink-0 mt-0.5">Error:</span>
+            <span className="text-red-900 text-[11px] break-words">{errorMessage}</span>
           </div>
 
           {onFixWithAI && (
             <button
               onClick={onFixWithAI}
               disabled={isFixing}
-              className="px-2.5 py-1 rounded-lg bg-pink-500 hover:bg-pink-500/90 text-white font-bold flex items-center gap-1.5 transition-all text-xs disabled:opacity-50"
+              className="min-h-11 sm:min-h-0 px-3 sm:py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold flex items-center gap-1.5 transition-all text-xs disabled:opacity-50"
             >
               {isFixing ? (
                 <>
@@ -1310,14 +1341,14 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                     {isFixing && aiProgress && aiProgress.status === 'downloading'
                       ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
                       : isFixing && aiProgress
-                      ? aiProgress.text || 'Fixing with AI...'
+                      ? statusText(aiProgress, 'Fixing with AI...')
                       : 'Fixing with AI...'}
                   </span>
                 </>
               ) : (
                 <>
-                  <Sparkles className="w-3 h-3 text-gray-900" />
-                  <span>Auto-Fix with Gemini AI</span>
+                  <Sparkles className="w-3 h-3" />
+                  <span>Fix this with AI</span>
                 </>
               )}
             </button>

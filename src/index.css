@@ -1,21 +1,35 @@
 @import "tailwindcss";
 
-@theme {
-  --color-gray-50: var(--color-gray-50-override);
-  --color-gray-100: var(--color-gray-100-override);
-  --color-gray-200: var(--color-gray-200-override);
-  --color-gray-300: var(--color-gray-300-override);
-  --color-gray-400: var(--color-gray-400-override);
-  --color-gray-500: var(--color-gray-500-override);
-  --color-gray-600: var(--color-gray-600-override);
-  --color-gray-700: var(--color-gray-700-override);
-  --color-gray-800: var(--color-gray-800-override);
-  --color-gray-900: var(--color-gray-900-override);
-  --color-gray-950: var(--color-gray-950-override);
-    }
+/*
+ * Class-based dark mode.
+ *
+ * Tailwind v4's default `dark:` variant is `@media (prefers-color-scheme: dark)`,
+ * but this app toggles a `.dark` class on <html>. Without this declaration the
+ * two mechanisms key off different signals, so `dark:` utilities followed the
+ * OS while the CSS variables followed the toggle — they could sit in opposite
+ * states at the same time.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
 
-:root {
-  /* Light mode (Neutral/Warm grays) */
+/*
+ * Colour tokens.
+ *
+ * These used to be defined through an `-override` indirection:
+ *   @theme { --color-gray-100: var(--color-gray-100-override) }
+ *   :root  { --color-gray-100: #f3f4f6;
+ *            --color-gray-100-override: var(--color-gray-100) }
+ *   :root.dark { --color-gray-100-override: #121212 }
+ *
+ * That was circular, and worse, the `:root` block is unlayered author CSS —
+ * it outranks Tailwind's theme layer, so `--color-gray-100` was pinned to the
+ * light literal permanently and `.dark` only changed a variable nothing read.
+ * Every `bg-gray-*` / `text-gray-*` utility in the app therefore stayed light
+ * in dark mode; only the body colour and the scrollbar ever flipped.
+ *
+ * Now there is one variable per token: the light value in `@theme`, the dark
+ * value overridden by the more specific `:root.dark`.
+ */
+@theme {
   --color-gray-50: #f9fafb;
   --color-gray-100: #f3f4f6;
   --color-gray-200: #e5e7eb;
@@ -27,21 +41,9 @@
   --color-gray-800: #1f2937;
   --color-gray-900: #111827;
   --color-gray-950: #030712;
-  
-  --color-gray-50-override: var(--color-gray-50);
-  --color-gray-100-override: var(--color-gray-100);
-  --color-gray-200-override: var(--color-gray-200);
-  --color-gray-300-override: var(--color-gray-300);
-  --color-gray-400-override: var(--color-gray-400);
-  --color-gray-500-override: var(--color-gray-500);
-  --color-gray-600-override: var(--color-gray-600);
-  --color-gray-700-override: var(--color-gray-700);
-  --color-gray-800-override: var(--color-gray-800);
-  --color-gray-900-override: var(--color-gray-900);
-  --color-gray-950-override: var(--color-gray-950);
-  
-      
-  /* Hardcoded app colors mapped to variables */
+}
+
+:root {
   --app-bg: #f6f4f0;
   --app-card-1: #fcfaf7;
   --app-card-2: #fbfaf8;
@@ -51,19 +53,19 @@
 }
 
 :root.dark {
-  /* Dark mode (Inverted mapping) */
-  --color-gray-50-override: #0a0a0a;
-  --color-gray-100-override: #121212;
-  --color-gray-200-override: #262626;
-  --color-gray-300-override: #404040;
-  --color-gray-400-override: #525252;
-  --color-gray-500-override: #737373;
-  --color-gray-600-override: #8c8c8c;
-  --color-gray-700-override: #a3a3a3;
-  --color-gray-800-override: #c2c2c2;
-  --color-gray-900-override: #d4d4d4;
-  --color-gray-950-override: #e5e5e5;
-  
+  /* Inverted ramp: 50 is darkest, 950 is lightest. */
+  --color-gray-50: #0a0a0a;
+  --color-gray-100: #121212;
+  --color-gray-200: #262626;
+  --color-gray-300: #404040;
+  --color-gray-400: #525252;
+  --color-gray-500: #737373;
+  --color-gray-600: #8c8c8c;
+  --color-gray-700: #a3a3a3;
+  --color-gray-800: #c2c2c2;
+  --color-gray-900: #d4d4d4;
+  --color-gray-950: #e5e5e5;
+
   --app-bg: #000000;
   --app-card-1: #0f0f0f;
   --app-card-2: #141414;
@@ -76,7 +78,7 @@
   body {
     font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     background-color: var(--app-bg);
-    color: var(--color-gray-900-override);
+    color: var(--color-gray-900);
   }
 
   code, pre, .font-mono {
@@ -93,7 +95,7 @@
   background: var(--app-bg);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-gray-300-override);
+  background: var(--color-gray-300);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -114,4 +116,44 @@ input[type=range] {
 }
 .glow-beige {
   box-shadow: 0 0 16px rgba(17,24,39, 0.1);
+}
+
+/*
+ * Modal entrance animations.
+ *
+ * `animate-fade-in` and `animate-scale-up` were already used by
+ * TokenInspectorModal and AddBlockModal, but no @keyframes existed anywhere,
+ * so the two most frequently opened dialogs appeared as hard cuts while the
+ * rest of the app animated.
+ */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scale-up {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-fade-in  { animation: fade-in 140ms ease-out; }
+.animate-scale-up { animation: scale-up 160ms ease-out; }
+
+/*
+ * Respect the OS "reduce motion" setting.
+ *
+ * The app uses ~34 animation utilities, several of which run CONTINUOUSLY
+ * rather than as transient feedback — a pulsing "press EVAL" badge, a pulsing
+ * highlight on the token you are trying to read, a bouncing badge that runs
+ * for the whole of a multi-minute model download. For a vestibular-sensitive
+ * user that is a session-long assault, and in a music tool with audio-synced
+ * visuals it is also a photosensitivity concern.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { audioEngine, EvalEvent } from '../engine/audioEngine';
-import { TriggeredNote } from '../types';
 import { Activity, Disc, Cpu, Zap, CheckCircle2 } from 'lucide-react';
 
 interface PatternVisualizerProps {
@@ -13,7 +12,6 @@ export const PatternVisualizer: React.FC<PatternVisualizerProps> = ({ isPlaying,
   const spectrumCanvasRef = useRef<HTMLCanvasElement>(null);
   const radarCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [activeNotes, setActiveNotes] = useState<TriggeredNote[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [voicePulses, setVoicePulses] = useState<Record<string, number>>({
     drums: 0,
@@ -30,7 +28,6 @@ export const PatternVisualizer: React.FC<PatternVisualizerProps> = ({ isPlaying,
   // Track triggered notes and eval events from audio engine
   useEffect(() => {
     const unsubNote = audioEngine.subscribe((note) => {
-      setActiveNotes((prev) => [note, ...prev.slice(0, 5)]);
       setVoicePulses((prev) => ({
         ...prev,
         [note.voice]: Date.now(),
@@ -258,7 +255,14 @@ export const PatternVisualizer: React.FC<PatternVisualizerProps> = ({ isPlaying,
       animId = requestAnimationFrame(render);
     };
 
-    render();
+    // Only run the draw loop while something is actually moving. When stopped,
+    // paint one final frame and stand down until playback resumes.
+    if (isPlaying) {
+      render();
+    } else {
+      render();
+      cancelAnimationFrame(animId);
+    }
     return () => cancelAnimationFrame(animId);
   }, [isPlaying, bpm, evalSyncPulse]);
 

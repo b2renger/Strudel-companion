@@ -64,7 +64,7 @@ export const ExportReplModal: React.FC<ExportReplModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div
-        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl font-mono overflow-hidden animate-in zoom-in-95 duration-200"
+        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-xl max-h-[90dvh] flex flex-col shadow-2xl font-mono overflow-hidden animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}

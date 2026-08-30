@@ -225,6 +225,43 @@ export interface AIEngineProgress {
   totalBytes?: number;
   timeElapsed?: number;
   errorMessage?: string;
+  /**
+   * Device-specific advisories (VRAM too small, no shader-f16, metered
+   * connection, low storage...). Surfaced verbatim in the engine picker.
+   */
+  warnings?: string[];
+}
+
+/**
+ * Human-readable label for each engine. Used anywhere the UI needs to name
+ * the engine that actually produced a result, so no screen can claim an
+ * engine that did not run.
+ */
+export const AI_ENGINE_LABELS: Record<AIEngineType, string> = {
+  'webgpu-gemma': 'Local model (WebGPU)',
+  'chrome-builtin': 'Chrome built-in AI',
+  'instant-heuristic': 'Built-in pattern rules',
+  'cloud-gemini': 'Gemini (your API key)',
+};
+
+/**
+ * Every AI call returns its payload wrapped with the engine that ACTUALLY
+ * produced it.
+ *
+ * This exists because the previous design caught every failure and returned
+ * rule-based output under the selected engine's name, which made it
+ * impossible to tell a working engine from a broken one. If a call falls back,
+ * `producedBy` names the engine that really ran and `degraded` explains why
+ * the requested one did not.
+ */
+export interface AIEngineResult<T> {
+  data: T;
+  /** The engine that actually generated `data`. */
+  producedBy: AIEngineType;
+  /** The engine the user had selected, when it differs from `producedBy`. */
+  requestedEngine?: AIEngineType;
+  /** Why the requested engine did not run. Present iff a fallback occurred. */
+  degraded?: string;
 }
 
 /**
@@ -246,5 +283,50 @@ export interface AIWorkerResponse {
   progress?: AIEngineProgress;
   data?: any;
   error?: string;
+  /**
+   * Set on 'ready' / 'progress' messages emitted while satisfying a request
+   * whose own id is `id`. The main thread must NOT resolve the pending
+   * request on these — loading the model is a step on the way to the answer,
+   * not the answer.
+   */
+  phase?: 'init';
+}
+
+/**
+ * Broad device class used to decide which local models to offer, recommend,
+ * or hide. Derived from a real `navigator.gpu.requestAdapter()` probe rather
+ * than the presence of `navigator.gpu`, which is true even on devices whose
+ * adapter request returns null.
+ */
+export type DeviceTier =
+  | 'no-webgpu'      // navigator.gpu absent entirely
+  | 'no-adapter'     // navigator.gpu present but requestAdapter() returned null
+  | 'mobile-low'     // phone/tablet, or very little reported memory
+  | 'desktop-mid'    // works, but not enough headroom for the 2B models
+  | 'desktop-high';  // comfortably runs the largest offered model
+
+/**
+ * Result of the one-time hardware probe.
+ */
+export interface DeviceProfile {
+  tier: DeviceTier;
+  /** WebGPU 'shader-f16' feature. Every q4f16_1 model needs it. */
+  hasF16: boolean;
+  /** adapter.limits.maxBufferSize — spec floor is 268435456 (256 MiB). */
+  maxBufferSize: number;
+  /** adapter.limits.maxStorageBufferBindingSize — spec floor 134217728. */
+  maxStorageBufferBindingSize: number;
+  /** adapter.info.vendor when exposed, e.g. 'qualcomm' | 'apple' | 'nvidia'. */
+  gpuVendor: string;
+  /** navigator.deviceMemory in GiB. Chromium-only; null elsewhere. */
+  deviceMemoryGiB: number | null;
+  hardwareConcurrency: number | null;
+  /** Free bytes from navigator.storage.estimate(), best effort. */
+  storageFreeBytes: number | null;
+  /** saveData, or a 2g/3g effectiveType. Chromium-only; false elsewhere. */
+  isMetered: boolean;
+  isMobile: boolean;
+  isIOS: boolean;
+  isAndroid: boolean;
 }
 

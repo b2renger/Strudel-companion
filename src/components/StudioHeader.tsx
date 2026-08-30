@@ -71,7 +71,22 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   const [engineProgress, setEngineProgress] = React.useState(aiManager.getProgress());
 
   React.useEffect(() => {
-    setIsDark(document.documentElement.classList.contains('dark'));
+    // Restore the saved choice, falling back to the OS preference. Previously
+    // this only read the class off <html> — which is never set on a fresh
+    // load — so dark mode reset on every reload and the system setting was
+    // ignored entirely.
+    let dark = false;
+    try {
+      const saved = localStorage.getItem('strudel_theme');
+      dark = saved
+        ? saved === 'dark'
+        : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch {
+      dark = false;
+    }
+    setIsDark(dark);
+    document.documentElement.classList.toggle('dark', dark);
+
     const unsubEngine = aiManager.onEngineChange((e) => setActiveEngine(e));
     const unsubProg = aiManager.onProgress((p) => setEngineProgress(p));
     return () => {
@@ -83,8 +98,12 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   const toggleTheme = () => {
     const next = !isDark;
     setIsDark(next);
-    if (next) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
+    document.documentElement.classList.toggle('dark', next);
+    try {
+      localStorage.setItem('strudel_theme', next ? 'dark' : 'light');
+    } catch {
+      /* storage unavailable — the toggle still works for this session */
+    }
   };
 
   const handleQuickSaveClick = () => {
@@ -94,7 +113,15 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   };
 
   return (
-    <header className="h-14 border-b border-gray-200 flex items-center px-3 sm:px-6 justify-between bg-gray-50 text-gray-900 font-mono select-none sticky top-0 z-30 shadow-sm">
+    // `min-h-14` + `flex-wrap` instead of a fixed `h-14` with no wrap.
+    //
+    // The right-hand cluster alone needs roughly 280px of unshrinkable buttons,
+    // which with the brand block overflowed a 390px phone by ~80px. `<body>`
+    // then carried `overflow-x-hidden`, so the overflow was CLIPPED rather than
+    // scrollable — on a sticky bar that never scrolls away, the theme toggle
+    // and Guide button were permanently unreachable. Wrapping to a second row
+    // is the fix; hiding the overflow was not.
+    <header className="min-h-14 border-b border-gray-200 flex items-center flex-wrap gap-y-1.5 px-3 sm:px-6 py-1.5 justify-between bg-gray-50 text-gray-900 font-mono select-none sticky top-0 z-30 shadow-sm">
       {/* Left: Brand & Transport */}
       <div className="flex items-center gap-3 sm:gap-5">
         <div className="flex items-center gap-2.5">
@@ -150,6 +177,8 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           </div>
           <input
             type="range"
+            aria-label="Master low-pass filter cutoff"
+            aria-valuetext={`${cutoff} hertz`}
             min={200}
             max={16000}
             step={100}
@@ -167,6 +196,8 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           </div>
           <input
             type="range"
+            aria-label="Master volume"
+            aria-valuetext={`${Math.round(volume * 100)} percent`}
             min={0}
             max={1.2}
             step={0.05}
@@ -195,7 +226,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
                   ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-800'
                   : 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-gray-800'
               }`}
-              title="Change AI Inference Engine (WebGPU Gemma, Chrome Built-in Nano, Heuristics, Cloud)"
+              title="Change AI Inference Engine (WebGPU Gemma, Chrome Built-in Nano, Heuristics, Cloud)" aria-label="Change AI Inference Engine (WebGPU Gemma, Chrome Built-in Nano, Heuristics, Cloud)"
             >
               {engineProgress.status === 'downloading' ? (
                 <>
@@ -236,7 +267,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
                 ? 'bg-emerald-500 text-white border-emerald-500 font-bold'
                 : 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-gray-800'
             }`}
-            title="Quick save current workspace state"
+            title="Quick save current workspace state" aria-label="Quick save current workspace state"
           >
             <Save className="w-3.5 h-3.5 text-emerald-600" />
             <span className="hidden sm:inline font-semibold">
@@ -249,12 +280,12 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
             id="open-sessions-btn"
             onClick={onOpenSessions}
             className="px-2.5 py-1.5 bg-gray-100 border border-gray-200 rounded-md hover:bg-gray-200 text-xs text-gray-800 flex items-center gap-1.5 transition-all font-mono shadow-sm"
-            title="Open Saved Sessions & Variations"
+            title="Open Saved Sessions & Variations" aria-label="Open Saved Sessions & Variations"
           >
             <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
             <span className="hidden sm:inline font-semibold">Sessions</span>
             {savedSessionsCount > 0 && (
-              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/15 text-emerald-700 font-bold border border-emerald-500/30">
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 font-bold border border-emerald-500/30">
                 {savedSessionsCount}
               </span>
             )}
@@ -265,7 +296,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
             id="open-repl-export-btn"
             onClick={onOpenExportRepl}
             className="px-2.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-700 rounded-md text-xs flex items-center gap-1.5 transition-all font-mono shadow-sm font-semibold uppercase"
-            title="Send pattern to official Strudel REPL (strudel.cc)"
+            title="Send pattern to official Strudel REPL (strudel.cc)" aria-label="Send pattern to official Strudel REPL (strudel.cc)"
           >
             <Globe className="w-3.5 h-3.5" />
             <span className="hidden md:inline">strudel.cc</span>
@@ -277,7 +308,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
             id="open-presets-btn"
             onClick={onOpenPresets}
             className="px-2 py-1.5 bg-gray-100 border border-gray-200 rounded-md hover:bg-gray-200 text-xs text-gray-800 flex items-center gap-1.5 transition-all font-mono shadow-sm"
-            title="Open Starter Track Presets"
+            title="Open Starter Track Presets" aria-label="Open Starter Track Presets"
           >
             <Music className="w-3.5 h-3.5 text-pink-600" />
             <span className="hidden lg:inline font-semibold">Presets</span>
@@ -288,7 +319,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
             id="open-guide-btn"
             onClick={onOpenGuide}
             className="px-2 py-1.5 bg-gray-100 border border-gray-200 rounded-md hover:bg-gray-200 text-xs text-gray-800 flex items-center gap-1.5 transition-all font-mono shadow-sm"
-            title="Mini-Notation Guide"
+            title="Mini-Notation Guide" aria-label="Mini-Notation Guide"
           >
             <Radio className="w-3.5 h-3.5 text-cyan-600" />
             <span className="hidden xl:inline font-semibold">Guide</span>
@@ -298,7 +329,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           <button
             onClick={toggleTheme}
             className="p-1.5 bg-gray-100 border border-gray-200 rounded-md hover:bg-gray-200 text-gray-700 hover:text-gray-900 transition-colors"
-            title="Toggle Theme"
+            title="Toggle Theme" aria-label="Toggle Theme"
           >
             {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           </button>

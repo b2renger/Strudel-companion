@@ -1,165 +1,231 @@
-# Strudel AI Live Studio 🎛️ 🎹
+# Strudel AI Live Studio 🎛️
 
-An in-browser algorithmic music live-coding studio and interactive playground powered by Strudel/TidalCycles mini-notation, procedural Web Audio synthesis, real-time audio visualization, and an intelligent AI music copilot.
+A browser-based algorithmic music live-coding studio. You write TidalCycles-style
+mini-notation, press Eval, and hear it — with an AI copilot that can write,
+explain, tweak and vary patterns for you.
 
----
-
-## 🌟 Key Features
-
-### 1. Algorithmic Live Coding & Mini-Notation Engine
-* **TidalCycles Notation**: Full support for rhythmic syntax including:
-  * **Euclidean Rhythms**: `(3,8)`, `(5,8)`, `(7,16)` for syncopated polyrhythms.
-  * **Subdivisions & Nesting**: `[bd sd]`, `[bd [~ cp]]`.
-  * **Speed & Polymeter**: `*2`, `/2`, `[c3 e3 g3, ~ b3]`.
-  * **Alternating Cycles**: `<c3 f3 g3 a3>` progression sequencing.
-  * **Probability & Degradation**: `hh?0.5`, `bd?0.8`.
-  * **Rests & Pauses**: `~`.
-* **Sound Generators & Synth Voices**: `sine`, `sawtooth`, `square`, `triangle`, `supersaw`, `pluck`, `piano`, `fm`, `rhodes`, `808`, `909`, `acid`, `ambient`.
-* **Real-time DSP Chains**: `.lpf()`, `.hpf()`, `.lpq()`, `.decay()`, `.attack()`, `.sustain()`, `.release()`, `.room()`, `.delay()`, `.delaytime()`, `.delayfeedback()`, `.pan()`, `.gain()`, `.fast()`, `.slow()`.
-
-### 2. AI Music Generation & Live Copilot
-* **Natural Language to Code**: Generate complex, polyphonic algorithmic music from natural language prompts (e.g., *"128 BPM cyberpunk bassline with aggressive acid filter sweep and 909 drums"*).
-* **Tiered Complexity**: Tailored generation for **Beginner**, **Intermediate**, and **Advanced** skill tiers.
-* **Instant Transformations**: Quick one-click musical variations:
-  * 🔥 *The Drop* (strips intros and unleashes peak energy)
-  * 🧊 *The Breakdown* (filters out drums, leaves atmospheric pads)
-  * 🌀 *Euclidean Shift* (re-grooves tracks with syncopated Euclidean rhythms)
-  * 🎹 *Harmonic Inversion* (replaces chords with jazz/neo-soul voicings)
-  * ⚡ *Glitch & Fill* (adds randomized micro-repeats and stutter fills)
-* **Natural Language Tweaker**: Request conversational adjustments (e.g. *"Make the drums punchier and open up the lowpass filter"*).
-
-### 3. Procedural Web Audio Engine (Zero External Sample Dependency)
-* Fully client-side procedural synthesis running in the browser's `AudioContext`.
-* Synthesized analog drum machines (punchy sub-bass 808 kicks, snappy noise snares, crisp metallic hi-hats, procedural claps).
-* Algorithmic impulse response reverb convolver, feedback delay line, and resonant biquad filters.
-* Rock-solid lookahead clock scheduler preventing audio buffer underruns and timing jitter.
-
-### 4. Interactive AST Token Parser & Code Inspector
-* Custom tokenizer parses Strudel code into abstract syntax layers and semantic tokens.
-* Click any token in the code editor to open the **Token Inspector**:
-  * Adjust numeric parameters via interactive sliders.
-  * Cycle sound waveforms or drum sample types with live previews.
-  * Wrap expressions in Euclidean rhythms or cycle brackets.
-* Line-by-line musical theory breakdown identifying layer roles (Drums, Bass, Harmony, Melody, FX).
-
-### 5. Real-Time Performance Visualizers & Telemetry
-* **Oscilloscope**: Real-time waveform rendering with smooth zero-crossing stabilization.
-* **FFT Spectrum Analyzer**: 64-band frequency spectrum with dynamic peak falloff.
-* **Euclidean Radar**: Circular step radar tracking 16-step cycles and active polyphonic voice pulses.
-* **Live Voice Meters**: Activity monitors for Drums, Bass, Chords, and Melody channels.
-
-### 6. Curated Library & Notation Cheatsheet
-* Built-in multi-genre presets across Cyberpunk, Lo-Fi, Deep Space Ambient, UK Garage, Acid Techno, and Chiptune.
-* Interactive **TidalCycles Mini-Notation Reference Guide** with copyable patterns and audio demonstrations.
+**Everything runs in your browser.** There is no backend, no account, and no
+telemetry. It deploys as a static site to GitHub Pages, and once loaded it works
+with the network cable unplugged.
 
 ---
 
-## 🏛️ Architecture Overview
+## Quick start
 
-```
-├── src/
-│   ├── engine/
-│   │   └── audioEngine.ts          # Core Web Audio synthesis engine & scheduler
-│   ├── utils/
-│   │   └── strudelTokenParser.ts   # Strudel mini-notation lexical analyzer & AST parser
-│   ├── components/
-│   │   ├── AIPromptBar.tsx         # Natural language prompt interface & token suggestions
-│   │   ├── AILiveCopilot.tsx       # AI variation cards and conversational code tweaker
-│   │   ├── CodeEditor.tsx          # Dual-mode code editor (Raw Text & Visual Track Lanes)
-│   │   ├── InteractiveCodeHighlighter.tsx # Semantic syntax highlighting with token clicks
-│   │   ├── LineByLineBreakdown.tsx  # Music theory & layer analysis inspector
-│   │   ├── NotationGuide.tsx       # TidalCycles mini-notation reference guide
-│   │   ├── PatternVisualizer.tsx   # Canvas-based oscilloscope, FFT & Euclidean radar
-│   │   ├── PresetSelectorModal.tsx # Preset catalog with filter tags & previews
-│   │   ├── PromptSuggestionEngine.tsx # Smart autocomplete and genre token palette
-│   │   ├── StudioHeader.tsx        # Master transport, BPM, DSP controls, & theme toggle
-│   │   └── TokenInspectorModal.tsx # Parameter slider & token modifier modal
-│   ├── data/
-│   │   └── presets.ts              # Hand-crafted multi-track presets
-│   ├── types.ts                    # Global TypeScript interfaces & data contracts
-│   ├── index.css                   # Tailwind CSS v4 styling & color tokens
-│   ├── App.tsx                     # Main layout & application coordinator
-│   └── main.tsx                    # React application entry point
-├── server.ts                       # Express backend proxying AI calls with multi-model failover
-├── package.json                    # Dependencies & build configuration
-└── vite.config.ts                  # Vite build & asset pipeline config
-```
+Requires Node 20 or newer.
 
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-* [Node.js](https://nodejs.org/) (version 18.0 or higher recommended)
-* A modern web browser with Web Audio API support (Chrome, Edge, Firefox, Safari)
-
-### 1. Installation
-Clone the repository and install dependencies:
 ```bash
-git clone <repository-url>
-cd strudel-ai-studio
 npm install
+npm run dev        # http://localhost:5173
 ```
 
-### 2. Configure Environment Variables
-Copy `.env.example` to `.env` and provide your Gemini API key (optional for core synthesizer, required for AI prompt generation):
-```bash
-cp .env.example .env
-```
-Inside `.env`:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-*(Note: If no API key is provided, the application automatically falls back to an intelligent procedural rule-based code generator).*
+Other scripts:
 
-### 3. Start Development Server
 ```bash
-npm run dev
+npm test           # unit tests for the parsers and validators
+npm run lint       # tsc --noEmit
+npm run build      # static output in dist/
+npm run preview    # serve the built site locally
 ```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 4. Build for Production
-```bash
-npm run build
-npm start
-```
+`npm test` covers the pure logic — the mini-notation token parser, the pattern
+validator, the sound vocabulary, and the model-output parser. Those are the
+regex-heavy parts where a silent regression is both most likely and most
+damaging. Anything needing a DOM, WebGPU or an AudioContext is not covered;
+see the manual checklist in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
-## ⌨️ Live Coding Quickstart Cheatsheet
+## The AI engines
 
-```javascript
-// 1. 4-on-the-floor Beat with Euclidean Snare & Open Hats
-s("bd*4, ~ [sd, cp](3,8), [hh*2 [hh oh]]*2")
-  .lpf(8000)
-  .room(0.2)
+Four engines, chosen in the header. They are genuinely different trade-offs, not
+tiers of the same thing.
 
-// 2. Acid Bassline with Cycling Filter
-note("<c2 [eb2 g2] bb1 <f2 g2>>")
-  .sound("sawtooth")
-  .lpf(sine.range(400, 3200).slow(4))
-  .decay(0.2)
-  .gain(0.8)
+| | Download | Speed | Offline | Data leaves device |
+|---|---|---|---|---|
+| **Built-in pattern rules** *(default)* | none | instant | yes | no |
+| **Local model (WebGPU)** | 0.4–1.9 GB once | seconds to a minute | yes, once downloaded | no |
+| **Chrome built-in AI** | managed by Chrome | fast | yes | no |
+| **Gemini (your API key)** | none | ~1–2 s | **no** | **yes** |
 
-// 3. Ambient Dream Chords
-chord("<Cm9 Fm7 Gm7 Abmaj7>")
-  .sound("supersaw")
-  .lpf(1400)
-  .room(0.8)
-  .delay(0.4)
+**Built-in pattern rules** is the default because it is the only engine that
+works with no key, no download and no network. It is *not* a language model — it
+assembles patterns from hand-written musical templates across twelve genres. It
+does not truly understand your prompt, but it always works.
+
+**Local model (WebGPU)** runs a real model in a Web Worker via
+[web-llm](https://github.com/mlc-ai/web-llm). The picker measures your hardware
+before offering anything, and recommends a model that will actually run. Weights
+are cached by the browser, so it is a one-time download.
+
+**Chrome built-in AI** uses Gemini Nano through the `LanguageModel` API
+(Chrome 138+, desktop only — it does not exist on Android or iOS, and it needs
+roughly 4 GB of video memory and 22 GB of free disk). The card is hidden
+automatically where it cannot run.
+
+**Gemini** calls Google's Generative Language API directly from your browser with
+a key you paste in. The key is stored in this browser's `localStorage`, is never
+sent anywhere except to Google, and can be removed with one click.
+
+> **If you use a Gemini key, restrict it.** Create a free key in
+> [Google AI Studio](https://aistudio.google.com/apikey) and add an HTTP-referrer
+> restriction for the domain you deploy to. A key on a public client-side site is
+> only as safe as its restrictions. The free tier also allows only a handful of
+> requests per minute — expect occasional rate limits.
+
+### Which engine actually produced this pattern?
+
+Every AI result carries the engine that really generated it, and the UI shows a
+**"Written by: …"** badge above the editor. If your chosen engine fails, the app
+falls back to the built-in rules — but it says so, names the reason, and offers
+an Undo. No engine ever wears another's name.
+
+---
+
+## Device requirements for local models
+
+WebGPU support is not the same as being able to run a model, so the app probes
+the real adapter (`navigator.gpu.requestAdapter()`) rather than trusting
+`navigator.gpu` to exist.
+
+The main constraint is the **`shader-f16`** WebGPU feature. Every `q4f16_1` build
+needs it, and Qualcomm GPUs cannot provide it — which rules those builds out on
+most Android phones. `Llama 3.2 1B (f32)` is included specifically as the build
+that runs without f16.
+
+The picker warns you, before any download starts, about:
+
+- a GPU with no 16-bit shader support (and which model to use instead)
+- a model larger than your device's reported memory can comfortably hold
+- insufficient free browser storage (weights need ~1.6× their size while loading)
+- a metered or slow connection
+- running on a phone at all, where generation takes 30–90 seconds
+
+**Selecting an engine never starts a download.** That takes a separate, explicit
+button, and it can be cancelled.
+
+---
+
+## What the audio engine actually supports
+
+The playback engine is a **custom Web Audio synthesiser**, not Strudel itself.
+That is a deliberate trade-off: it means zero sample downloads, so audio works
+completely offline. Strudel's own transpiler is used to **validate** your code,
+so syntax errors are real errors and code exported to strudel.cc is code that
+strudel.cc will accept.
+
+`src/audio/vocabulary.ts` is the single source of truth for sound names — both
+the synthesiser and the AI prompt are generated from it, so the model can never
+be told about a sound that will not play.
+
+**Drums** (each has its own voice): `bd` `sd` `hh` `oh` `cp` `rim` `cb` `tom`
+`shaker` `cr`
+Aliases: `kick`=`bd`, `snare`=`sd`, `hat`=`hh`, `clap`=`cp`, `cowbell`=`cb`,
+`crash`=`cr`
+Generic texture (all share one noise voice): `perc`
+
+**Synth voices**: `piano` `rhodes` `pluck` `sawtooth` `square` `triangle` `sine`
+
+**Mini-notation**: `bd*4` (repeat) · `bd(3,8)` (Euclidean) · `<a b c>` (alternate
+per cycle) · `[bd sd] hh` (subdivide) · `bd, hh*8` (parallel) · `~` (rest) ·
+`cp?` / `cp?0.3` (probability) · `a@2` (elongation)
+
+**Effects**: `.gain()` `.lpf()` `.hpf()` `.room()` `.delay()` `.decay()`
+`.pan()` `.fast()` `.slow()`
+
+### Not supported
+
+Be aware these are real Strudel features this engine does **not** implement:
+
+- `chord("<Cm9 Fm7>")` — chord names
+- Signals and continuous modulation: `sine.range(400, 3200)`, `perlin`, etc.
+- `bd/2` — slow-division inside mini-notation (use `.slow(2)` on the layer)
+- Sample banks (`.bank("RolandTR909")`) and any external sample pack
+- Quoted patterns as effect arguments, e.g. `.pan("0 1")` — pass a number
+
+Patterns using these will fail validation rather than play something wrong.
+
+---
+
+## Offline
+
+- The app shell is precached by a service worker, so reloading with no network
+  works.
+- Fonts are system fonts. Nothing is fetched from a CDN at runtime.
+- Model weights are cached by web-llm in Cache Storage. The app requests
+  persistent storage before downloading and tells you if the browser refuses —
+  browsers evict large caches under pressure, and Safari is especially eager, so
+  you may have to download again.
+- **Gemini is the one engine that needs the network.** Everything else works offline.
+
+---
+
+## Deploying to GitHub Pages
+
+Push to `main`. [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+builds and publishes automatically. Enable Pages once, under
+**Settings → Pages → Source → GitHub Actions**.
+
+The base path is derived from the repository name at build time, so forks and
+renames need no code change:
+
+```bash
+PAGES_BASE="/your-repo-name/" npm run build   # what CI does
+npm run build                                 # base '/', for a custom domain
 ```
 
----
-
-## 🛠️ Tech Stack
-
-* **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons, Motion.
-* **Audio**: Native Web Audio API, Canvas 2D Oscilloscope & FFT spectrum analyzer.
-* **Parser**: Custom Strudel / TidalCycles AST Tokenizer.
-* **AI Engine**: Google Gen AI SDK (`@google/genai`) with multi-tier fallback architecture and deterministic algorithmic fallback.
-* **Backend**: Express + Vite middleware bundling with `esbuild`.
+CI runs `npm run lint` and `npm test` before building, so a type error or a
+failing test never reaches the live site. The workflow also copies `index.html` to `404.html` (so deep links survive a
+refresh) and adds `.nojekyll`.
 
 ---
 
-## 📄 License
-MIT License. Built for algorithmic music creators, live coders, and sonic explorers.
+## Architecture
+
+```
+src/
+├── ai/
+│   ├── aiManager.ts        Orchestrates all four engines. Every call returns
+│   │                       AIEngineResult<T> carrying which engine really ran.
+│   ├── models.ts           Local model catalogue (vram, f16 need, context)
+│   ├── deviceProbe.ts      Real WebGPU adapter probe + per-model warnings
+│   ├── geminiClient.ts     Direct browser → Google, plain fetch, responseSchema
+│   ├── apiKeyStore.ts      Your Gemini key; documented threat model
+│   ├── chromeBuiltInAi.ts  Gemini Nano via the LanguageModel API
+│   ├── ruleBasedGenerator.ts  The offline template engine (12 genres)
+│   ├── prompts.ts          Prompts; vocabulary generated from audio/vocabulary
+│   └── outputParser.ts     Parses model output. Never invents music.
+├── workers/aiWorker.ts     web-llm in a Worker, so audio never stalls
+├── audio/
+│   ├── vocabulary.ts       Single source of truth for sound names
+│   └── validate.ts         Strudel transpiler + structural validation
+├── engine/audioEngine.ts   Web Audio synthesiser, scheduler, DSP
+├── utils/                  Token parser, session storage, REPL export
+├── components/             React UI
+└── types.ts                Shared contracts
+```
+
+**Why the split between validation and playback.** Real Strudel loads drum
+samples from a CDN, which would break the offline goal. A custom synthesiser
+keeps audio local; Strudel's transpiler keeps the syntax honest. You get real
+error messages and truthful REPL export without shipping a sample pack.
+
+---
+
+## Known limitations
+
+- Small local models (under ~1B parameters) produce simple and sometimes
+  musically dull patterns. This is inherent to their size, not a bug. Gemini or
+  a 2B model is noticeably better if your device can run one.
+- Local generation on a phone is slow — 30 to 90 seconds is normal — and the
+  browser may reclaim memory mid-run.
+- The token inspector understands the subset of mini-notation listed above.
+  Constructs outside it are left alone rather than edited.
+- Test coverage is limited to the pure logic (`npm test`). Audio, WebGPU and
+  UI behaviour are verified by hand against the checklist in `docs/`.
+
+---
+
+## Licence
+
+MIT.

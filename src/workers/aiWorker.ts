@@ -1,6 +1,14 @@
 /**
- * Dedicated Web Worker for In-Browser WebGPU LLM Inference using @mlc-ai/web-llm.
- * Runs Gemma 2B in an isolated thread to guarantee zero jitter on Web Audio synthesis clock.
+ * Dedicated Web Worker for in-browser WebGPU inference via @mlc-ai/web-llm.
+ *
+ * Runs the model off the main thread so that neither model loading nor token
+ * generation can stall the Web Audio scheduler or the render loop.
+ *
+ * NOTHING OUTSIDE THIS FILE MAY IMPORT IT. The model catalogue lives in
+ * `src/ai/models.ts` precisely so the UI can list models without pulling
+ * web-llm into the main bundle (and without evaluating the `self.onmessage`
+ * assignment below in window scope, where it would clobber
+ * `window.onmessage`).
  */
 
 import { CreateMLCEngine, MLCEngine, InitProgressReport } from '@mlc-ai/web-llm';
@@ -8,78 +16,83 @@ import {
   buildGeneratePrompt,
   buildTweakPrompt,
   buildExplainPrompt,
-  buildVariationsPrompt,
+  buildVariationPrompt,
   buildFixPrompt,
+  STRUDEL_SYSTEM_PROMPT,
 } from '../ai/prompts';
 import {
   parseGeneratedTrack,
   parseTweakResult,
   parseExplanationResult,
-  parseVariationsResult,
+  parseVariationResult,
 } from '../ai/outputParser';
+import { getModelSpec, DEFAULT_MODEL_ID } from '../ai/models';
 import { AIWorkerRequest, AIWorkerResponse } from '../types';
 
 let engine: MLCEngine | null = null;
-let currentModelId = 'gemma-2-2b-it-q4f16_1-MLC';
-let isInitializing = false;
+let loadedModelId: string | null = null;
+/**
+ * In-flight load. Concurrent requests await THIS rather than returning
+ * silently — the previous `if (isInitializing) return;` sent no reply at all,
+ * so the caller's promise never settled and its entry leaked from the pending
+ * map forever.
+ */
+let initPromise: Promise<void> | null = null;
 
-// Supported WebGPU models ranked by performance and footprint
-export const SUPPORTED_WEBGPU_MODELS = [
-  {
-    id: 'gemma-2-2b-it-q4f16_1-MLC',
-    name: 'Gemma 2 2B Instruct',
-    size: '~1.4 GB',
-    vram: '2.0 GB VRAM',
-    description: 'Google Gemma 2 2B optimized for WebGPU reasoning and code synthesis.',
-  },
-  {
-    id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
-    name: 'SmolLM2 1.7B Instruct',
-    size: '~1.0 GB',
-    vram: '1.5 GB VRAM',
-    description: 'Ultra-fast lightweight model with minimal download time.',
-  },
-  {
-    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-    name: 'Llama 3.2 1B Instruct',
-    size: '~0.8 GB',
-    vram: '1.2 GB VRAM',
-    description: 'Extremely compact model suitable for mobile and low-VRAM devices.',
-  },
-];
-
-function sendResponse(response: AIWorkerResponse) {
+function send(response: AIWorkerResponse) {
   self.postMessage(response);
 }
 
 /**
- * Initialize WebLLM engine with WebGPU
+ * Load `modelId`, reusing the engine when it is already the one loaded.
+ *
+ * `reqId` identifies the request being served. Progress and readiness
+ * messages emitted here are tagged `phase: 'init'` so the main thread knows
+ * they are a step toward the answer and must not resolve the request with
+ * them. Previously init replied `{ id: <the generate request's id>, type:
+ * 'ready' }`, the manager resolved that request with `data === undefined`,
+ * the UI reported a failure, and the model's real output — after a full
+ * download and a full inference — was discarded because its pending entry had
+ * already been deleted.
  */
-async function initEngine(modelId: string = currentModelId, reqId: string = 'init') {
-  if (engine && currentModelId === modelId) {
-    sendResponse({ id: reqId, type: 'ready' });
-    return;
+async function ensureEngine(modelId: string, reqId: string): Promise<void> {
+  if (engine && loadedModelId === modelId) return;
+
+  if (initPromise) {
+    await initPromise;
+    if (engine && loadedModelId === modelId) return;
   }
 
-  if (isInitializing) return;
-  isInitializing = true;
-  currentModelId = modelId;
+  initPromise = (async () => {
+    // Switching models: free the previous weights first. Reassigning over a
+    // live engine leaks its GPU buffers (up to ~1.9 GB), which JS garbage
+    // collection does not reliably reclaim.
+    if (engine) {
+      try {
+        await engine.unload();
+      } catch {
+        /* unloading is best-effort */
+      }
+      engine = null;
+      loadedModelId = null;
+    }
 
-  try {
-    sendResponse({
+    send({
       id: reqId,
       type: 'progress',
+      phase: 'init',
       progress: {
         status: 'downloading',
-        text: `Initializing WebGPU shader pipelines for ${modelId}...`,
-        progress: 0.05,
+        text: `Preparing ${modelId}…`,
+        progress: 0.02,
       },
     });
 
     const initProgressCallback = (report: InitProgressReport) => {
-      sendResponse({
+      send({
         id: reqId,
         type: 'progress',
+        phase: 'init',
         progress: {
           status: 'downloading',
           text: report.text,
@@ -89,137 +102,179 @@ async function initEngine(modelId: string = currentModelId, reqId: string = 'ini
       });
     };
 
-    engine = await CreateMLCEngine(modelId, {
-      initProgressCallback,
-      logLevel: 'WARN',
-    });
+    engine = await CreateMLCEngine(modelId, { initProgressCallback, logLevel: 'WARN' });
+    loadedModelId = modelId;
+  })();
 
-    isInitializing = false;
-    sendResponse({
-      id: reqId,
-      type: 'ready',
-      progress: {
-        status: 'ready',
-        text: `Model ${modelId} loaded and ready in WebGPU memory.`,
-        progress: 1.0,
-      },
-    });
-  } catch (err: any) {
-    isInitializing = false;
-    sendResponse({
-      id: reqId,
-      type: 'error',
-      error: err.message || 'Failed to initialize WebGPU WebLLM Engine.',
-      progress: {
-        status: 'error',
-        text: err.message || 'WebGPU initialization failed',
-        progress: 0,
-        errorMessage: err.message,
-      },
-    });
+  try {
+    await initPromise;
+  } finally {
+    initPromise = null;
   }
 }
 
 /**
- * Execute chat completion via engine
+ * Run one completion.
+ *
+ * Streams so the UI can show live progress instead of freezing for the 35–70
+ * seconds a 1,000-token reply takes on integrated graphics, and rejects on a
+ * length cut-off rather than handing a truncated pattern to the parser.
  */
-async function executePrompt(promptText: string): Promise<string> {
-  if (!engine) {
-    throw new Error('WebLLM Engine is not initialized. Please load the model first.');
+async function complete(reqId: string, userPrompt: string, maxTokens: number): Promise<string> {
+  if (!engine) throw new Error('The local model is not loaded.');
+
+  const spec = getModelSpec(loadedModelId || '');
+
+  // Gemma 2's chat template has no system turn, so its system text must be
+  // folded into the user message. Models that ARE system-tuned lose quality
+  // if we do the same to them, so this is decided per model.
+  const messages = spec?.supportsSystemRole
+    ? ([
+        { role: 'system', content: STRUDEL_SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ] as any)
+    : ([{ role: 'user', content: userPrompt }] as any);
+
+  const stream = await engine.chat.completions.create({
+    messages,
+    // Low, because every task here is a strict-format task. 0.4 produced
+    // format drift that the parser then had to guess at.
+    temperature: 0.15,
+    max_tokens: maxTokens,
+    stream: true,
+    stream_options: { include_usage: true },
+  } as any);
+
+  let text = '';
+  let finishReason: string | null = null;
+  let lastEmit = 0;
+
+  for await (const chunk of stream as any) {
+    const choice = chunk?.choices?.[0];
+    const delta = choice?.delta?.content;
+    if (delta) text += delta;
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+
+    // Throttled, so token streaming does not flood the main thread.
+    const now = Date.now();
+    if (now - lastEmit > 120) {
+      lastEmit = now;
+      send({
+        id: reqId,
+        type: 'progress',
+        progress: {
+          status: 'ready',
+          text: 'Generating…',
+          progress: Math.min(0.99, text.length / (maxTokens * 3)),
+        },
+      });
+    }
   }
 
-  const completion = await engine.chat.completions.create({
-    messages: [
-      { role: 'user', content: promptText },
-    ],
-    temperature: 0.4,
-    max_tokens: 1024,
-  });
+  if (finishReason === 'length') {
+    throw new Error(
+      'The model hit its output limit before finishing the pattern. Try a shorter pattern, ' +
+        'a simpler request, or a larger model.',
+    );
+  }
 
-  return completion.choices[0]?.message?.content || '';
+  if (!text.trim()) {
+    throw new Error('The model returned an empty response.');
+  }
+
+  return text;
 }
 
-// Handle incoming messages from the main UI thread
 self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
   const { id, type, modelId, payload } = e.data;
+  const targetModel = modelId || loadedModelId || DEFAULT_MODEL_ID;
 
   try {
     switch (type) {
-      case 'init':
-        await initEngine(modelId || currentModelId, id);
-        break;
-
-      case 'generate': {
-        if (!engine) await initEngine(modelId || currentModelId, id);
-        const { prompt, style, complexity, tempo } = payload;
-        const promptString = buildGeneratePrompt(prompt, style, complexity, tempo);
-        const rawOutput = await executePrompt(promptString);
-        const parsed = parseGeneratedTrack(rawOutput, prompt, style);
-        sendResponse({ id, type: 'result', data: parsed });
-        break;
-      }
-
-      case 'tweak': {
-        if (!engine) await initEngine(modelId || currentModelId, id);
-        const { currentCode, instruction } = payload;
-        const promptString = buildTweakPrompt(currentCode, instruction);
-        const rawOutput = await executePrompt(promptString);
-        const parsed = parseTweakResult(rawOutput, currentCode);
-        sendResponse({ id, type: 'result', data: parsed });
-        break;
-      }
-
-      case 'explain': {
-        if (!engine) await initEngine(modelId || currentModelId, id);
-        const { code } = payload;
-        const promptString = buildExplainPrompt(code);
-        const rawOutput = await executePrompt(promptString);
-        const parsed = parseExplanationResult(rawOutput);
-        sendResponse({ id, type: 'result', data: parsed });
-        break;
-      }
-
-      case 'suggest_variations': {
-        if (!engine) await initEngine(modelId || currentModelId, id);
-        const { currentCode, mood } = payload;
-        const promptString = buildVariationsPrompt(currentCode, mood);
-        const rawOutput = await executePrompt(promptString);
-        const parsed = parseVariationsResult(rawOutput, currentCode);
-        sendResponse({ id, type: 'result', data: parsed });
-        break;
-      }
-
-      case 'fix': {
-        if (!engine) await initEngine(modelId || currentModelId, id);
-        const { code, errorMessage } = payload;
-        const promptString = buildFixPrompt(code, errorMessage);
-        const rawOutput = await executePrompt(promptString);
-        const parsed = parseTweakResult(rawOutput, code);
-        sendResponse({
+      case 'init': {
+        await ensureEngine(targetModel, id);
+        send({
           id,
-          type: 'result',
-          data: {
-            fixedCode: parsed.code,
-            fixExplanation: parsed.summary,
-            reason: errorMessage,
+          type: 'ready',
+          phase: 'init',
+          progress: {
+            status: 'ready',
+            text: `${targetModel} is loaded and ready.`,
+            progress: 1,
           },
         });
         break;
       }
 
+      case 'generate': {
+        await ensureEngine(targetModel, id);
+        const { prompt, style, complexity, tempo } = payload;
+        const raw = await complete(id, buildGeneratePrompt(prompt, style, complexity, tempo), 1400);
+        send({ id, type: 'result', data: parseGeneratedTrack(raw, prompt, style, tempo) });
+        break;
+      }
+
+      case 'tweak': {
+        await ensureEngine(targetModel, id);
+        const { currentCode, instruction } = payload;
+        const raw = await complete(id, buildTweakPrompt(currentCode, instruction), 1400);
+        send({ id, type: 'result', data: parseTweakResult(raw) });
+        break;
+      }
+
+      case 'explain': {
+        await ensureEngine(targetModel, id);
+        const raw = await complete(id, buildExplainPrompt(payload.code), 900);
+        send({ id, type: 'result', data: parseExplanationResult(raw) });
+        break;
+      }
+
+      // One variation per request. Three complete patterns in a single reply
+      // needs ~2,100 output tokens, which overran the budget every time and
+      // truncated mid-pattern; the manager now issues these sequentially.
+      case 'suggest_variations': {
+        await ensureEngine(targetModel, id);
+        const { currentCode, mood, recipe } = payload;
+        const raw = await complete(
+          id,
+          buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
+          1400,
+        );
+        send({ id, type: 'result', data: parseVariationResult(raw, recipe) });
+        break;
+      }
+
+      case 'fix': {
+        await ensureEngine(targetModel, id);
+        const { code, errorMessage } = payload;
+        const raw = await complete(id, buildFixPrompt(code, errorMessage), 1400);
+        // The fix prompt now asks for the same shape as a tweak, so the two
+        // share a parser. They previously disagreed — the prompt asked for
+        // `fixedCode` while the parser required `code` — which meant the fix
+        // path ALWAYS fell through to a catch-all that returned the raw model
+        // output, JSON braces and all, straight into the user's editor.
+        send({ id, type: 'result', data: parseTweakResult(raw) });
+        break;
+      }
+
       case 'unload': {
         if (engine) {
-          await engine.unload();
+          try {
+            await engine.unload();
+          } catch {
+            /* best effort */
+          }
           engine = null;
+          loadedModelId = null;
         }
-        sendResponse({ id, type: 'result', data: { unloaded: true } });
+        send({ id, type: 'result', data: { unloaded: true } });
         break;
       }
 
       default:
-        sendResponse({ id, type: 'error', error: `Unknown worker action: ${type}` });
+        send({ id, type: 'error', error: `Unknown worker action: ${type}` });
     }
   } catch (err: any) {
-    sendResponse({ id, type: 'error', error: err.message || 'Error processing AI worker request' });
+    send({ id, type: 'error', error: err?.message || 'The local model failed to respond.' });
   }
 };

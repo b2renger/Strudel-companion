@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { statusText } from '../ai/progressText';
 import {
   Sparkles,
   Sliders,
@@ -124,7 +125,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
           <button
             onClick={onOpenSessionsModal}
             className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-200 rounded text-[10px] font-bold flex items-center gap-1 transition-colors uppercase"
-            title="Open Saved Sessions Drawer"
+            title="Open Saved Sessions Drawer" aria-label="Open Saved Sessions Drawer"
           >
             <Save className="w-3 h-3 text-emerald-600" />
             <span className="hidden sm:inline">Sessions</span>
@@ -152,7 +153,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
               <span>
                 {aiProgress && aiProgress.status === 'downloading' 
                   ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%` 
-                  : aiProgress?.text || 'Tweaking...'}
+                  : statusText(aiProgress, 'Tweaking...')}
               </span>
             </>
           ) : (
@@ -210,7 +211,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
             <Flame className="w-3 h-3 text-pink-600" />
             <span>DJ Variations</span>
             {variations.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-pink-500/20 text-pink-600 text-[9px] font-mono font-bold">
+              <span className="px-1.5 py-0.5 rounded-full bg-pink-500/20 text-pink-600 text-[9px] font-mono font-bold">
                 {variations.length} available
               </span>
             )}
@@ -221,7 +222,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
               <button
                 onClick={onClearVariations}
                 className="text-[9px] text-gray-500 hover:text-red-500 font-bold px-1.5 py-1 rounded transition-colors uppercase"
-                title="Clear all variations"
+                title="Clear all variations" aria-label="Clear all variations"
               >
                 Clear
               </button>
@@ -230,7 +231,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
             <button
               onClick={() => setShowAddCustom((p) => !p)}
               className="text-[10px] text-gray-700 hover:text-gray-900 font-bold flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-md border border-gray-200 transition-colors uppercase"
-              title="Save current editor buffer as custom variation"
+              title="Save current editor buffer as custom variation" aria-label="Save current editor buffer as custom variation"
             >
               <Plus className="w-2.5 h-2.5" />
               <span>Snapshot</span>
@@ -240,14 +241,14 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
               onClick={() => onRequestVariations(selectedMood)}
               disabled={isLoadingVariations}
               className="text-[10px] text-pink-600 hover:text-pink-700 font-bold flex items-center gap-1.5 bg-pink-500/10 hover:bg-pink-500/20 px-2.5 py-1 rounded-md border border-pink-500/30 hover:border-pink-500/60 transition-colors disabled:opacity-50 uppercase shadow-sm"
-              title="Generate new variations (accumulates in list)"
+              title="Generate new variations (accumulates in list)" aria-label="Generate new variations (accumulates in list)"
             >
               <RefreshCw className={`w-3 h-3 ${isLoadingVariations ? 'animate-spin' : ''}`} />
               <span>
                 {isLoadingVariations && aiProgress && aiProgress.status === 'downloading'
                   ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
                   : isLoadingVariations && aiProgress
-                  ? aiProgress.text || 'Generating...'
+                  ? statusText(aiProgress, 'Generating...')
                   : variations.length > 0 ? 'Generate More (+3)' : 'Generate Variations'}
               </span>
             </button>
@@ -319,7 +320,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                       </span>
                       <div className="flex items-center gap-1 shrink-0">
                         {isActive && (
-                          <span className="text-[8px] uppercase px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 border border-emerald-500/30 font-bold">
+                          <span className="text-[8px] uppercase px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-700 border border-emerald-500/30 font-bold">
                             Active
                           </span>
                         )}
@@ -354,7 +355,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                             ? 'bg-emerald-500 text-white border-emerald-500'
                             : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-200'
                         }`}
-                        title="Save variation to current session"
+                        title="Save variation to current session" aria-label="Save variation to current session"
                       >
                         {isSaved ? <Check className="w-3 h-3" /> : <Save className="w-3 h-3" />}
                       </button>
@@ -363,7 +364,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                     <button
                       onClick={() => openInOfficialStrudel(v.code)}
                       className="p-1.5 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 transition-colors"
-                      title="Open variation in official strudel.cc REPL"
+                      title="Open variation in official strudel.cc REPL" aria-label="Open variation in official strudel.cc REPL"
                     >
                       <ExternalLink className="w-3 h-3" />
                     </button>
@@ -372,7 +373,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                       <button
                         onClick={() => onDeleteVariation(v.id || varKey)}
                         className="p-1.5 rounded-md bg-gray-100 hover:bg-red-50 text-gray-400 hover:text-red-500 border border-gray-200 transition-colors opacity-70 group-hover:opacity-100"
-                        title="Delete variation"
+                        title="Delete variation" aria-label="Delete variation"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -398,7 +399,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                 {isLoadingVariations && aiProgress && aiProgress.status === 'downloading'
                   ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
                   : isLoadingVariations && aiProgress
-                  ? aiProgress.text || 'Generating...'
+                  ? statusText(aiProgress, 'Generating...')
                   : 'Generate 3 Variations'}
               </span>
             </button>

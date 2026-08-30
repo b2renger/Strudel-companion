@@ -1,202 +1,300 @@
 /**
- * Output parser for client-side LLM outputs.
- * Extracts clean JSON and code blocks with fallbacks.
+ * Parser for model output.
+ *
+ * Design rule: THIS FILE NEVER INVENTS MUSIC.
+ *
+ * The previous version answered every unparseable response with a canned
+ * `stack(s("bd*4"), ...)` pattern and a plausible explanation, so a user
+ * could not tell a working model from a broken one — and a truncated reply
+ * (which `jsonrepair` happily closes into well-formed JSON) became a
+ * half-written pattern that overwrote their work. Every function here now
+ * throws `AIParseError` when it cannot honestly extract a result. Callers
+ * report the failure and name the engine that produced it.
+ *
+ * Two response shapes are supported:
+ *  - Fenced code + labelled lines, which is what `prompts.ts` asks small
+ *    local models for (see the rationale there).
+ *  - JSON, which Gemini produces under a real `responseSchema`.
  */
 
 import { AIGeneratedTrack, AITweakResult, AIExplanationResult, AIVariation } from '../types';
 import { jsonrepair } from 'jsonrepair';
 
+export class AIParseError extends Error {
+  /** Raw model output, kept for the dev console — never shown to the user. */
+  readonly raw: string;
+  constructor(message: string, raw: string) {
+    super(message);
+    this.name = 'AIParseError';
+    this.raw = raw;
+  }
+}
+
+/** A fenced block that never closed means the model was cut off mid-answer. */
+function assertNotTruncated(text: string): void {
+  const fences = (text.match(/```/g) || []).length;
+  if (fences % 2 !== 0) {
+    throw new AIParseError(
+      'The model ran out of room and its answer was cut off mid-pattern.',
+      text,
+    );
+  }
+}
+
 /**
- * Extract clean JSON or markdown code block from raw LLM output string.
+ * Extract the runnable pattern.
+ *
+ * Deliberately strict. The old implementation ended with
+ * `if (text.includes('s(')) return text.trim()`, which matches almost any
+ * English sentence containing "s(" — that catch-all is how a raw JSON blob
+ * ended up in the editor as "code".
  */
-export function extractJsonFromOutput<T = any>(text: string): T | null {
-  if (!text || typeof text !== 'string') return null;
+export function extractCodeBlock(text: string): string | null {
+  if (!text) return null;
 
-  const trimmed = text.trim();
-
-  // 1. Direct JSON parse
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch (e) {
-    // Continue
+  const fenced = text.match(/```(?:strudel|javascript|js)?\s*\n?([\s\S]*?)```/i);
+  if (fenced && fenced[1] && fenced[1].trim()) {
+    return fenced[1].trim();
   }
 
-  try {
-    return JSON.parse(jsonrepair(trimmed)) as T;
-  } catch (e) {}
-
-  // 2. Parse inside ```json ... ``` or ``` ... ``` block
-  const markdownJsonMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (markdownJsonMatch && markdownJsonMatch[1]) {
-    try {
-      return JSON.parse(markdownJsonMatch[1].trim()) as T;
-    } catch (e) {
-      try {
-        return JSON.parse(jsonrepair(markdownJsonMatch[1].trim())) as T;
-      } catch (e) {}
+  // Unfenced, but starting on a line that opens a real Strudel expression.
+  const bare = text.match(/^[ \t]*((?:stack|s|note|n|sound)\s*\([\s\S]*)$/m);
+  if (bare && bare[1]) {
+    const candidate = bare[1].trim();
+    // Balanced parentheses is a cheap proxy for "this is a whole expression".
+    let depth = 0;
+    for (const ch of candidate) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (depth < 0) break;
     }
-  }
-
-  // 3. Find outermost curly braces { ... }
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = trimmed.substring(firstBrace, lastBrace + 1);
-    try {
-      return JSON.parse(candidate) as T;
-    } catch (e) {
-      try {
-        return JSON.parse(jsonrepair(candidate)) as T;
-      } catch (e) {}
-    }
+    if (depth === 0) return candidate;
   }
 
   return null;
 }
 
-/**
- * Extract raw runnable code block from text.
- */
-export function extractCodeBlock(text: string): string {
-  if (!text) return '';
-
-  const codeBlockMatch = text.match(/```(?:javascript|js|strudel)?\s*([\s\S]*?)\s*```/i);
-  if (codeBlockMatch && codeBlockMatch[1]) {
-    return codeBlockMatch[1].trim();
+/** Read `LABEL: value` lines, ignoring anything inside the fenced block. */
+function readLabels(text: string): Map<string, string[]> {
+  const withoutCode = text.replace(/```[\s\S]*?```/g, '\n');
+  const out = new Map<string, string[]>();
+  for (const line of withoutCode.split('\n')) {
+    const m = line.match(/^\s*([A-Z][A-Z_]{2,15}):\s*(.+?)\s*$/);
+    if (!m) continue;
+    const key = m[1].toUpperCase();
+    if (!out.has(key)) out.set(key, []);
+    out.get(key)!.push(m[2].trim());
   }
-
-  // If starts with stack( or s( or note(
-  if (text.includes('stack(') || text.includes('s(') || text.includes('note(')) {
-    return text.trim();
-  }
-
-  return text.trim();
+  return out;
 }
 
-/**
- * Normalize and validate generated track.
- */
-export function parseGeneratedTrack(rawOutput: string, defaultPrompt: string = '', defaultGenre: string = 'Electronic'): AIGeneratedTrack {
-  const json = extractJsonFromOutput<Partial<AIGeneratedTrack>>(rawOutput);
+function firstLabel(labels: Map<string, string[]>, key: string): string | undefined {
+  return labels.get(key)?.[0];
+}
 
-  if (json && json.code) {
+/** Tolerant JSON extraction, used for Gemini's schema-constrained replies. */
+export function extractJsonFromOutput<T = any>(text: string): T | null {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+
+  const candidates: string[] = [trimmed];
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  if (first !== -1 && last > first) candidates.push(trimmed.substring(first, last + 1));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      /* try the repair pass below */
+    }
+    try {
+      return JSON.parse(jsonrepair(candidate)) as T;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+const VALID_ROLES = ['Drums', 'Bass', 'Harmony', 'Melody', 'FX', 'Structure'] as const;
+type Role = (typeof VALID_ROLES)[number];
+
+function coerceRole(value: string): Role {
+  const found = VALID_ROLES.find((r) => r.toLowerCase() === value.trim().toLowerCase());
+  return found || 'Structure';
+}
+
+// ---------------------------------------------------------------------------
+// Public parsers
+// ---------------------------------------------------------------------------
+
+export function parseGeneratedTrack(
+  rawOutput: string,
+  defaultPrompt = '',
+  defaultGenre = 'Electronic',
+  defaultBpm = 120,
+): AIGeneratedTrack {
+  assertNotTruncated(rawOutput);
+
+  // Gemini path: schema-constrained JSON.
+  const json = extractJsonFromOutput<Partial<AIGeneratedTrack>>(rawOutput);
+  if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: extractCodeBlock(json.code),
-      title: json.title || 'Algorithmic Track',
-      bpm: Number(json.bpm) || 120,
+      code: extractCodeBlock(json.code) || json.code.trim(),
+      title: json.title || 'Untitled Pattern',
+      bpm: Number(json.bpm) || defaultBpm,
       genre: json.genre || defaultGenre,
-      explanation: json.explanation || `Algorithmic synthesis generated for "${defaultPrompt}".`,
+      explanation: json.explanation || '',
       notationBreakdown: Array.isArray(json.notationBreakdown) ? json.notationBreakdown : [],
       liveTweaks: Array.isArray(json.liveTweaks) ? json.liveTweaks : [],
     };
   }
 
-  // Fallback: extract code from raw text
-  const extractedCode = extractCodeBlock(rawOutput);
+  // Local-model path: fenced code + labels.
+  const code = extractCodeBlock(rawOutput);
+  if (!code) {
+    throw new AIParseError('The model did not return a usable pattern.', rawOutput);
+  }
+
+  const labels = readLabels(rawOutput);
+  const notation = (labels.get('NOTE') || [])
+    .map((entry) => {
+      const [symbol, ...rest] = entry.split(/\s+[—–-]\s+/);
+      return { symbolOrMethod: symbol.trim(), meaning: rest.join(' - ').trim() };
+    })
+    .filter((n) => n.symbolOrMethod && n.meaning);
+
+  const bpm = Number((firstLabel(labels, 'BPM') || '').replace(/[^\d.]/g, ''));
+
   return {
-    code: extractedCode || `// Generated Pattern\nstack(\n  s("bd*4"),\n  s("~ cp ~ cp"),\n  s("hh*8").gain(0.6)\n)`,
-    title: 'Algorithmic Live Pattern',
-    bpm: 120,
-    genre: defaultGenre,
-    explanation: `Generated pattern based on prompt: ${defaultPrompt}`,
-    notationBreakdown: [
-      { symbolOrMethod: 'stack(...)', meaning: 'Concurrent polyphonic layers' },
-      { symbolOrMethod: 's("bd*4")', meaning: '4-on-the-floor kick' },
-    ],
+    code,
+    title: firstLabel(labels, 'TITLE') || 'Untitled Pattern',
+    bpm: Number.isFinite(bpm) && bpm > 0 ? bpm : defaultBpm,
+    genre: firstLabel(labels, 'GENRE') || defaultGenre,
+    explanation:
+      firstLabel(labels, 'WHY') ||
+      (defaultPrompt ? `Pattern generated for "${defaultPrompt}".` : ''),
+    notationBreakdown: notation,
     liveTweaks: [],
   };
 }
 
-/**
- * Normalize and validate tweak result.
- */
-export function parseTweakResult(rawOutput: string, originalCode: string): AITweakResult {
-  const json = extractJsonFromOutput<Partial<AITweakResult>>(rawOutput);
+export function parseTweakResult(rawOutput: string): AITweakResult {
+  assertNotTruncated(rawOutput);
 
-  if (json && json.code) {
+  const json = extractJsonFromOutput<Partial<AITweakResult>>(rawOutput);
+  if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      code: extractCodeBlock(json.code),
-      summary: json.summary || 'Updated pattern with live modifications.',
-      diffHighlights: Array.isArray(json.diffHighlights) ? json.diffHighlights : ['Modified arrangement'],
+      code: extractCodeBlock(json.code) || json.code.trim(),
+      summary: json.summary || 'Pattern updated.',
+      diffHighlights: Array.isArray(json.diffHighlights) ? json.diffHighlights : [],
       liveTweaks: Array.isArray(json.liveTweaks) ? json.liveTweaks : [],
     };
   }
 
-  const extractedCode = extractCodeBlock(rawOutput);
+  const code = extractCodeBlock(rawOutput);
+  if (!code) {
+    throw new AIParseError('The model did not return an updated pattern.', rawOutput);
+  }
+
+  const labels = readLabels(rawOutput);
   return {
-    code: extractedCode || originalCode,
-    summary: 'Adjusted pattern code based on instruction.',
-    diffHighlights: ['Pattern updated live'],
+    code,
+    summary: firstLabel(labels, 'SUMMARY') || 'Pattern updated.',
+    diffHighlights: labels.get('CHANGED') || [],
     liveTweaks: [],
   };
 }
 
-/**
- * Normalize and validate explanation result.
- */
 export function parseExplanationResult(rawOutput: string): AIExplanationResult {
-  const json = extractJsonFromOutput<Partial<AIExplanationResult>>(rawOutput);
+  assertNotTruncated(rawOutput);
 
-  if (json && (json.summary || json.lineByLine)) {
+  const json = extractJsonFromOutput<Partial<AIExplanationResult>>(rawOutput);
+  if (json && (json.summary || Array.isArray(json.lineByLine))) {
     return {
-      summary: json.summary || 'Algorithmic Strudel composition analysis.',
+      summary: json.summary || '',
       lineByLine: Array.isArray(json.lineByLine) ? json.lineByLine : [],
       miniNotationGuide: Array.isArray(json.miniNotationGuide) ? json.miniNotationGuide : [],
-      musicTheoryTip: json.musicTheoryTip || 'Explore modal interchange and Euclidean rhythms to evolve this pattern.',
+      musicTheoryTip: json.musicTheoryTip || '',
     };
   }
 
+  const labels = readLabels(rawOutput);
+  const summary = firstLabel(labels, 'SUMMARY');
+
+  const lineByLine = (labels.get('LINE') || [])
+    .map((entry) => {
+      const parts = entry.split('|').map((p) => p.trim());
+      return { line: parts[0] || '', role: coerceRole(parts[1] || ''), explanation: parts[2] || '' };
+    })
+    .filter((l) => l.line && l.explanation);
+
+  const miniNotationGuide = (labels.get('SYMBOL') || [])
+    .map((entry) => {
+      const parts = entry.split('|').map((p) => p.trim());
+      return {
+        symbol: parts[0] || '',
+        title: parts[1] || '',
+        explanation: parts[2] || '',
+        example: parts[3] || '',
+      };
+    })
+    .filter((s) => s.symbol && s.explanation);
+
+  if (!summary && lineByLine.length === 0) {
+    throw new AIParseError('The model did not return a usable explanation.', rawOutput);
+  }
+
   return {
-    summary: 'Algorithmic composition utilizing Strudel mini-notation syntax.',
-    lineByLine: [
-      { line: 'stack(...)', role: 'Structure', explanation: 'Combines multiple rhythmic layers together' },
-    ],
-    miniNotationGuide: [
-      { symbol: '*', title: 'Multiplication', explanation: 'Repeats pattern N times per cycle', example: 'bd*4' },
-      { symbol: '~', title: 'Rest', explanation: 'Silent musical pause', example: '~ cp ~ cp' },
-    ],
-    musicTheoryTip: 'Try applying .lpf(cutoff) and .room(reverb) modulation for atmospheric depth.',
+    summary: summary || '',
+    lineByLine,
+    miniNotationGuide,
+    musicTheoryTip: firstLabel(labels, 'TIP') || '',
   };
 }
 
-/**
- * Normalize and validate variations result.
- */
-export function parseVariationsResult(rawOutput: string, baseCode: string): { variations: AIVariation[] } {
-  const json = extractJsonFromOutput<{ variations: AIVariation[] }>(rawOutput);
+/** Parses ONE variation. `prompts.ts` requests them one per call. */
+export function parseVariationResult(
+  rawOutput: string,
+  recipe: { type: string; title: string; description: string },
+): AIVariation {
+  assertNotTruncated(rawOutput);
 
-  if (json && Array.isArray(json.variations) && json.variations.length > 0) {
+  const newId = () =>
+    `var-${recipe.type}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
+  // Gemini path: schema-constrained JSON.
+  const json = extractJsonFromOutput<{ code?: string; title?: string; summary?: string }>(
+    rawOutput,
+  );
+  if (json && typeof json.code === 'string' && json.code.trim()) {
     return {
-      variations: json.variations.map((v) => ({
-        id: v.id || 'var-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        title: v.title || 'Live Variation',
-        type: v.type || 'drop',
-        description: v.description || 'Dynamic transformation',
-        code: extractCodeBlock(v.code),
-        createdAt: Date.now(),
-      })),
+      id: newId(),
+      title: json.title || recipe.title,
+      type: recipe.type,
+      description: json.summary || recipe.description,
+      code: extractCodeBlock(json.code) || json.code.trim(),
+      createdAt: Date.now(),
     };
   }
 
-  // Heuristic variations fallback
+  const code = extractCodeBlock(rawOutput);
+  if (!code) {
+    throw new AIParseError('The model did not return a usable variation.', rawOutput);
+  }
+
+  const labels = readLabels(rawOutput);
   return {
-    variations: [
-      {
-        id: 'var-peak-drop',
-        title: 'The Drop (Peak Energy)',
-        type: 'drop',
-        description: 'Pumping four-on-the-floor kick with wide open synth filter.',
-        code: `// The Drop\nstack(\n  s("bd*4"),\n  s("hh*16").gain(0.6),\n  s("~ cp ~ cp").gain(0.85),\n  note("<c2 f2 g2 bb1>").s("sawtooth").lpf(3200).decay(0.25).gain(0.9)\n)`,
-        createdAt: Date.now(),
-      },
-      {
-        id: 'var-ambient-break',
-        title: 'Atmospheric Breakdown',
-        type: 'breakdown',
-        description: 'Drums muted, spacious delay and reverb wash.',
-        code: `// Atmospheric Breakdown\nstack(\n  s("~ hh ~ hh").gain(0.35),\n  note("<[c3 e3 g3 b3] [f3 a3 c4 e4]>").s("piano").decay(0.8).room(0.7).delay(0.5).gain(0.8)\n)`,
-        createdAt: Date.now(),
-      },
-    ],
+    id: newId(),
+    title: firstLabel(labels, 'TITLE') || recipe.title,
+    type: recipe.type,
+    description: firstLabel(labels, 'SUMMARY') || recipe.description,
+    code,
+    createdAt: Date.now(),
   };
 }

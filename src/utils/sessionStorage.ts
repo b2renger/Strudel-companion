@@ -2,6 +2,8 @@ import { SavedSession, AIVariation } from '../types';
 import { STARTER_PRESETS } from '../data/presets';
 
 const STORAGE_KEY = 'strudel_saved_sessions_v1';
+/** Marks that the starter sessions have been installed at least once. */
+const SEEDED_KEY = 'strudel_sessions_seeded_v1';
 const ACTIVE_SESSION_ID_KEY = 'strudel_active_session_id';
 
 /**
@@ -88,16 +90,27 @@ export function getSavedSessions(): SavedSession[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
+      if (localStorage.getItem(SEEDED_KEY)) return [];
       const initial = getInitialDefaultSessions();
       saveAllSessions(initial);
+      try {
+        localStorage.setItem(SEEDED_KEY, '1');
+      } catch {
+        /* storage unavailable */
+      }
       return initial;
     }
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
+    if (!Array.isArray(parsed)) {
       const initial = getInitialDefaultSessions();
       saveAllSessions(initial);
       return initial;
     }
+    // An empty array is a legitimate state — the user deleted everything.
+    // This used to re-seed the two starter sessions whenever the list was
+    // empty, so deleting your last session brought them back and the library
+    // could never be cleared. The separate SEEDED_KEY flag distinguishes
+    // "never seeded" from "deliberately emptied".
     return parsed;
   } catch (err) {
     console.warn('Failed to load saved sessions from storage:', err);
@@ -108,11 +121,24 @@ export function getSavedSessions(): SavedSession[] {
 /**
  * Save the entire list of sessions.
  */
-export function saveAllSessions(sessions: SavedSession[]): void {
+export function saveAllSessions(sessions: SavedSession[]): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    return true;
   } catch (err) {
-    console.error('Failed to write sessions to localStorage:', err);
+    // Almost always QuotaExceededError. Retry once with the bulkiest field —
+    // the accumulated variations — dropped from the oldest sessions, so the
+    // user keeps their patterns even when storage is tight.
+    try {
+      const trimmed = sessions.map((s, i) =>
+        i < 5 ? s : { ...s, variations: [] },
+      );
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      return true;
+    } catch {
+      console.error('Failed to write sessions to localStorage:', err);
+      return false;
+    }
   }
 }
 

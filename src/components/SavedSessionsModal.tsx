@@ -203,7 +203,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div
-        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl font-mono overflow-hidden animate-in zoom-in-95 duration-200"
+        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-4xl max-h-[90dvh] flex flex-col shadow-2xl font-mono overflow-hidden animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
@@ -232,7 +232,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
             <button
               onClick={exportSessionsToJSON}
               className="px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border border-gray-200 text-[11px] font-bold flex items-center gap-1.5 transition-all uppercase"
-              title="Export all sessions to backup JSON file"
+              title="Export all sessions to backup JSON file" aria-label="Export all sessions to backup JSON file"
             >
               <Download className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Export Backup</span>
@@ -369,14 +369,14 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                           {session.name}
                         </span>
                         {isCurrentActive && (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500 text-white font-bold uppercase">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500 text-white font-bold uppercase">
                             Active
                           </span>
                         )}
-                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-gray-100 text-gray-700 border border-gray-200 font-semibold">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 border border-gray-200 font-semibold">
                           {session.bpm} BPM
                         </span>
-                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-pink-500/10 text-pink-600 border border-pink-500/30 font-semibold uppercase">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-pink-500/10 text-pink-600 border border-pink-500/30 font-semibold uppercase">
                           {session.genre}
                         </span>
                       </div>
@@ -403,7 +403,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                       <button
                         onClick={() => handleLoad(session)}
                         className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all uppercase tracking-tight"
-                        title="Load master pattern and its variations"
+                        title="Load master pattern and its variations" aria-label="Load master pattern and its variations"
                       >
                         <Play className="w-3 h-3 fill-current" />
                         <span>Load</span>
@@ -412,7 +412,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                       <button
                         onClick={() => openInOfficialStrudel(session.code)}
                         className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border border-gray-200 transition-colors"
-                        title="Open in Official Strudel.cc REPL"
+                        title="Open in Official Strudel.cc REPL" aria-label="Open in Official Strudel.cc REPL"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
                       </button>
@@ -420,7 +420,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                       <button
                         onClick={() => handleDuplicate(session.id)}
                         className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border border-gray-200 transition-colors"
-                        title="Duplicate session"
+                        title="Duplicate session" aria-label="Duplicate session"
                       >
                         <Copy className="w-3.5 h-3.5" />
                       </button>
@@ -428,7 +428,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                       <button
                         onClick={() => handleDelete(session.id, session.name)}
                         className="p-1.5 rounded-lg bg-gray-100 hover:bg-red-500/20 text-gray-700 hover:text-red-600 border border-gray-200 transition-colors"
-                        title="Delete session"
+                        title="Delete session" aria-label="Delete session"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -467,7 +467,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                                 <span className="text-[11px] font-bold text-gray-900 truncate">
                                   {v.title}
                                 </span>
-                                <span className="text-[8px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold uppercase shrink-0">
+                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold uppercase shrink-0">
                                   {v.type}
                                 </span>
                               </div>
@@ -493,7 +493,7 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
                               <button
                                 onClick={() => openInOfficialStrudel(v.code)}
                                 className="p-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 text-[10px]"
-                                title="Open this variation in strudel.cc"
+                                title="Open this variation in strudel.cc" aria-label="Open this variation in strudel.cc"
                               >
                                 <ExternalLink className="w-3 h-3" />
                               </button>

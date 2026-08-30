@@ -5,6 +5,8 @@
  */
 
 import { TriggeredNote } from '../types';
+import { isDrumName } from '../audio/vocabulary';
+import { validatePattern, warmUpValidator } from '../audio/validate';
 
 export interface EvalEvent {
   timestamp: number;
@@ -40,6 +42,26 @@ class StrudelAudioEngine {
   private evalCallbacks: Set<EvalCallback> = new Set();
   private voiceActivity: Record<string, number> = {};
 
+  /**
+   * When the next cycle should START, in AudioContext time.
+   *
+   * The scheduler used to re-read `ctx.currentTime` on every tick and place
+   * that cycle's events relative to it, while waking itself with
+   * `setTimeout((cycleDuration - 0.05) * 1000)`. The real period therefore
+   * equalled the timeout delay, not the cycle duration — 120 BPM played at
+   * roughly 123 — and because the next cycle was anchored 50 ms before the
+   * current one ended, every downbeat flammed against the previous cycle's
+   * tail. Accumulating in audio time removes both faults and stops timer
+   * jitter from accumulating.
+   */
+  private nextCycleTime: number = 0;
+
+  /** Voice gains currently scheduled, so hush() can silence them at once. */
+  private activeVoiceGains: Set<GainNode> = new Set();
+
+  /** Visualiser/cleanup timers, tracked so stop() can cancel them. */
+  private pendingTimeouts: Set<number> = new Set();
+
   // Interactive live DSP controls
   private masterCutoff: number = 12000;
   private masterVolume: number = 0.85;
@@ -52,6 +74,12 @@ class StrudelAudioEngine {
 
   public init() {
     if (this.ctx) return;
+
+    // Start fetching Strudel's transpiler in the background. Until it lands,
+    // validation falls back to structural checks, so evaluation never waits
+    // on it.
+    void warmUpValidator();
+
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     this.ctx = new AudioCtx();
 
@@ -204,23 +232,47 @@ class StrudelAudioEngine {
   public evaluate(code: string): { success: boolean; error?: string } {
     try {
       this.init();
+
+      // Validate BEFORE touching engine state, using Strudel's own parser
+      // where available. Previously nothing in the parse chain could throw and
+      // an unrecognised pattern silently fell back to a canned drum loop, so
+      // `evaluate()` reported success for literally any input — which left
+      // `errorMessage` permanently null and the "Fix with AI" path dead.
+      const validation = validatePattern(code);
+      if (!validation.ok) {
+        this.emitEval({
+          timestamp: Date.now(),
+          cycle: this.currentCycle,
+          layersCount: 0,
+          bpm: this.bpm,
+          success: false,
+          code,
+          error: validation.error,
+        });
+        return { success: false, error: validation.error };
+      }
+
       this.currentCode = code;
 
-      // Extract BPM if present in code like .cpm(120) or .cps(1) or setcps
+      // Extract BPM if present in code like .cpm(120) or .cps(1)
       const cpmMatch = code.match(/\.cpm\((\d+)\)/);
       if (cpmMatch && cpmMatch[1]) {
         this.bpm = parseInt(cpmMatch[1], 10);
       } else {
-        const cpsMatch = code.match(/\.cps\(([\d\.\/\*]+)\)/);
-        if (cpsMatch && cpsMatch[1]) {
-          try {
-            // eslint-disable-next-line no-eval
-            const computedCps = eval(cpsMatch[1]);
-            if (typeof computedCps === 'number' && computedCps > 0) {
-              this.bpm = Math.round(computedCps * 60 * 4);
-            }
-          } catch (e) {
-            // ignore
+        const cpsMatch = code.match(/\.cps\(\s*([\d.]+)\s*(?:([/*])\s*([\d.]+)\s*)?\)/);
+        if (cpsMatch) {
+          // Parsed arithmetic rather than eval(). The old `eval(cpsMatch[1])`
+          // was not exploitable, but it forced any Content-Security-Policy to
+          // allow 'unsafe-eval' — which is exactly what you do not want on a
+          // public static site.
+          const left = parseFloat(cpsMatch[1]);
+          const op = cpsMatch[2];
+          const right = cpsMatch[3] ? parseFloat(cpsMatch[3]) : undefined;
+          let computedCps = left;
+          if (op === '/' && right) computedCps = left / right;
+          else if (op === '*' && right) computedCps = left * right;
+          if (Number.isFinite(computedCps) && computedCps > 0) {
+            this.bpm = Math.round(computedCps * 60 * 4);
           }
         }
       }
@@ -250,6 +302,28 @@ class StrudelAudioEngine {
     }
   }
 
+  /**
+   * Creates and resumes the AudioContext SYNCHRONOUSLY.
+   *
+   * Must be called from inside a user gesture (a click or tap handler) before
+   * any `await`. iOS Safari only resumes a suspended context while a gesture
+   * is being handled, so an AI flow that awaits a model and then calls
+   * `play()` has already left the gesture — generation appeared to succeed and
+   * produced no sound at all on iPhone and iPad.
+   */
+  public unlock() {
+    this.init();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      // Fire-and-forget: the point is to make the call inside the gesture.
+      void this.ctx.resume();
+    }
+  }
+
+  /** True once the context is actually running and audible. */
+  public isAudioUnlocked(): boolean {
+    return this.ctx?.state === 'running';
+  }
+
   public async play() {
     this.init();
     if (this.ctx && this.ctx.state === 'suspended') {
@@ -258,6 +332,8 @@ class StrudelAudioEngine {
 
     if (this.isRunning) return;
     this.isRunning = true;
+    // Anchor the cycle clock to the audio clock, with a little lead-in.
+    this.nextCycleTime = this.ctx ? this.ctx.currentTime + 0.06 : 0;
     this.scheduleLoop();
   }
 
@@ -267,11 +343,42 @@ class StrudelAudioEngine {
       window.clearTimeout(this.timerId);
       this.timerId = null;
     }
+    // Voice nodes for the current cycle have already been scheduled at future
+    // timestamps, so cancelling the next tick is not enough on its own —
+    // see hush().
+    for (const id of this.pendingTimeouts) window.clearTimeout(id);
+    this.pendingTimeouts.clear();
   }
 
+  /**
+   * Stops immediately and silences anything already scheduled.
+   *
+   * `stop()` alone only cancelled the next scheduler tick. Every oscillator
+   * and buffer source for the current cycle had already been created and
+   * started at a future time, so pressing Hush kept playing for up to a full
+   * cycle — two seconds at 120 BPM, three at 80.
+   *
+   * Ramping the voice bus to zero catches all of them at once, then the bus is
+   * restored so the next play() is audible.
+   */
   public hush() {
     this.stop();
     this.voiceActivity = {};
+
+    if (this.ctx) {
+      const t = this.ctx.currentTime;
+      for (const voiceGain of this.activeVoiceGains) {
+        try {
+          voiceGain.gain.cancelScheduledValues(t);
+          voiceGain.gain.setValueAtTime(voiceGain.gain.value, t);
+          // A short ramp rather than an abrupt zero, which would click.
+          voiceGain.gain.linearRampToValueAtTime(0, t + 0.015);
+        } catch {
+          /* node already finished */
+        }
+      }
+    }
+    this.activeVoiceGains.clear();
   }
 
   // Engine cycle scheduler
@@ -280,27 +387,38 @@ class StrudelAudioEngine {
 
     const cycleDurationSeconds = (60 / this.bpm) * 4; // 1 Strudel cycle = 4 beats / 1 measure
     const stepResolution = 16; // 16th note steps per cycle
-    const stepDuration = cycleDurationSeconds / stepResolution;
 
     const now = this.ctx.currentTime;
+
+    // Guard against a stalled tab: if the clock has run far past the planned
+    // start, re-anchor rather than dumping a burst of overdue events.
+    if (this.nextCycleTime < now - cycleDurationSeconds) {
+      this.nextCycleTime = now + 0.02;
+    }
+
+    const cycleStart = this.nextCycleTime;
     const cycle = this.currentCycle;
 
-    // Trigger events for each parsed layer in this cycle
     for (const layer of this.parsedLayers) {
       const events = this.resolveLayerEvents(layer, cycle, stepResolution);
       for (const ev of events) {
-        const eventTime = now + ev.timeOffset * cycleDurationSeconds;
-        this.triggerSound(ev, eventTime, layer);
+        // Anchored to the accumulated cycle start, NOT to currentTime at
+        // callback time, so timer jitter cannot drift the tempo.
+        this.triggerSound(ev, cycleStart + ev.timeOffset * cycleDurationSeconds, layer);
       }
     }
 
     this.currentCycle = (this.currentCycle + 1) % 64;
+    this.nextCycleTime = cycleStart + cycleDurationSeconds;
 
-    // Schedule next cycle slightly before current cycle ends to prevent gaps
-    const nextTickMs = (cycleDurationSeconds - 0.05) * 1000;
+    // Wake up shortly before the next cycle is due, then schedule exactly at
+    // the accumulated time. The lead-in is scheduling headroom only — it no
+    // longer shortens the cycle.
+    const leadInSeconds = 0.06;
+    const nextTickMs = (this.nextCycleTime - this.ctx.currentTime - leadInSeconds) * 1000;
     this.timerId = window.setTimeout(() => {
       this.scheduleLoop();
-    }, Math.max(10, nextTickMs));
+    }, Math.max(4, nextTickMs));
   }
 
   // -------------------------------------------------------------
@@ -337,19 +455,16 @@ class StrudelAudioEngine {
       if (parsed) layers.push(parsed);
     }
 
-    // Default fallback if no pattern parsed
+    // No silent fallback layer here.
+    //
+    // This used to push a canned `bd sd, hh*4` whenever nothing parsed, which
+    // is why `evaluate()` could never fail: unparseable code played a drum
+    // loop and reported success. Throwing instead lets the caller show a real
+    // error — and gives the "Fix with AI" button something to act on.
     if (layers.length === 0) {
-      layers.push({
-        type: 'sample',
-        pattern: 'bd sd, hh*4',
-        soundType: 'drum',
-        gain: 0.8,
-        pan: 0,
-        cutoff: 12000,
-        decay: 0.3,
-        room: 0.2,
-        delay: 0.2,
-      });
+      throw new Error(
+        'No playable layer found. Check that each layer is an s("...") or note("...") call.',
+      );
     }
 
     return layers;
@@ -391,15 +506,22 @@ class StrudelAudioEngine {
     let room = 0.2;
     let delay = 0.2;
 
-    // Detect s("...") or sound("...")
-    const sMatch = str.match(/(?:s|sound)\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/);
+    // The leading (?:^|[^.\w]) guard is essential.
+    //
+    // Without a boundary, /(?:note|n)\s*\(/ matches the `n(` inside `.pan(`
+    // and `.gain(`. So `s("bd*4").pan("0 1")` was reclassified as a NOTE
+    // layer with pattern "0 1", turning the kick into MIDI notes 0 and 1 —
+    // 8.18 Hz and 8.66 Hz, inaudible. The layer simply vanished.
+    //
+    // These match the FIRST source call, not a chained `.s(...)`, because the
+    // chained form is the instrument selector handled just below.
+    const sMatch = str.match(/(?:^|[^.\w])(?:s|sound)\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/);
     if (sMatch) {
       type = 'sample';
       pattern = sMatch[1];
     }
 
-    // Detect note("...") or n("...")
-    const noteMatch = str.match(/(?:note|n)\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/);
+    const noteMatch = str.match(/(?:^|[^.\w])(?:note|n)\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/);
     if (noteMatch) {
       type = 'note';
       pattern = noteMatch[1];
@@ -460,13 +582,39 @@ class StrudelAudioEngine {
   // Resolve mini-notation into time-stamped events for a given cycle
   private resolveLayerEvents(layer: ParsedLayer, cycle: number, resolution: number): ResolvedEvent[] {
     const events: ResolvedEvent[] = [];
-    const parallelStreams = layer.pattern.split(',');
+
+    // Bracket-aware. A plain `.split(',')` broke every Euclidean group and
+    // every nested subdivision that contains a comma: `s("bd*4, ~ [sd, cp](3,8)")`
+    // became the three fragments `bd*4`, `~ [sd` and `cp](3,8)`. The engine
+    // already had this helper — it just was not used here.
+    const parallelStreams = this.splitTopLevelCommas(layer.pattern);
+
+    // `.fast(n)` / `.slow(n)` were parsed, stored on the layer and then never
+    // read by anything, so both methods silently did nothing.
+    const speed = layer.speedMultiplier && layer.speedMultiplier > 0 ? layer.speedMultiplier : 1;
 
     for (const stream of parallelStreams) {
       const streamTokens = this.tokenizeMiniNotation(stream.trim(), cycle);
       const streamEvents = this.expandTokensToEvents(streamTokens, 0, 1);
       for (const ev of streamEvents) {
-        events.push(ev);
+        if (speed === 1) {
+          events.push(ev);
+          continue;
+        }
+        // Repeat the stream `speed` times per cycle when faster; stretch it
+        // across several cycles when slower.
+        if (speed > 1) {
+          const repeats = Math.floor(speed);
+          for (let r = 0; r < repeats; r++) {
+            const offset = (ev.timeOffset + r) / repeats;
+            if (offset < 1) events.push({ ...ev, timeOffset: offset });
+          }
+        } else {
+          const stretch = Math.round(1 / speed);
+          const activeCycle = cycle % stretch;
+          const scaled = ev.timeOffset * stretch - activeCycle;
+          if (scaled >= 0 && scaled < 1) events.push({ ...ev, timeOffset: scaled });
+        }
       }
     }
 
@@ -529,14 +677,38 @@ class StrudelAudioEngine {
     const events: ResolvedEvent[] = [];
     if (tokens.length === 0) return events;
 
-    const slotDuration = duration / tokens.length;
+    // Elongation `a@2` widens a step relative to its siblings, so slots are
+    // allocated by weight rather than split evenly. `@` was previously not
+    // implemented at all: `a@2` fell through to the note path, failed the
+    // pitch regex and produced a wrong tone instead of a longer note.
+    const weights = tokens.map((t) => {
+      const m = t.trim().match(/@\s*([\d.]+)\s*$/);
+      const w = m ? parseFloat(m[1]) : 1;
+      return Number.isFinite(w) && w > 0 ? w : 1;
+    });
+    const totalWeight = weights.reduce((a, b) => a + b, 0) || tokens.length;
 
+    let cursor = start;
     for (let i = 0; i < tokens.length; i++) {
       let token = tokens[i].trim();
-      const slotStart = start + i * slotDuration;
+      const slotDuration = (duration * weights[i]) / totalWeight;
+      const slotStart = cursor;
+      cursor += slotDuration;
+
+      // Strip the elongation suffix now that it has been applied.
+      token = token.replace(/@\s*[\d.]+\s*$/, '');
+
+      // Probability `cp?` (50%) or `cp?0.3`. Also previously unimplemented —
+      // the token kept its '?' and played every cycle at full volume.
+      const probMatch = token.match(/\?\s*([\d.]*)\s*$/);
+      if (probMatch) {
+        token = token.replace(/\?\s*[\d.]*\s*$/, '');
+        const chance = probMatch[1] ? parseFloat(probMatch[1]) : 0.5;
+        if (Math.random() > (Number.isFinite(chance) ? chance : 0.5)) continue;
+      }
 
       // Rest
-      if (token === '~' || token === '_') continue;
+      if (!token || token === '~' || token === '_') continue;
 
       // Grouping [a b c]
       if (token.startsWith('[') && token.endsWith(']')) {
@@ -583,9 +755,9 @@ class StrudelAudioEngine {
     if (!this.ctx || !this.masterGain) return;
 
     const item = ev.item.toLowerCase();
-    const isDrum = ['bd', 'sd', 'hh', 'oh', 'cp', 'rim', 'tom', 'perc', 'cb', 'cr', 'shaker', 'kick', 'snare', 'clap', 'hat'].some(
-      (d) => item.startsWith(d)
-    );
+    // Sourced from src/audio/vocabulary.ts, which the AI prompt also reads,
+    // so the model can never be told about a sound this branch would reject.
+    const isDrum = isDrumName(item);
 
     // Determine voice category for visualizer
     let voiceRole: 'drums' | 'bass' | 'chords' | 'lead' | 'fx' = 'lead';
@@ -599,9 +771,12 @@ class StrudelAudioEngine {
       voiceRole = 'lead';
     }
 
-    // Schedule notification for visualizer
+    // Schedule notification for visualizer. Tracked so stop()/hush() can
+    // cancel it — these used to be untracked, so the visualiser kept pulsing
+    // for a full cycle after the user pressed Hush.
     const delayMs = Math.max(0, (time - this.ctx.currentTime) * 1000);
-    setTimeout(() => {
+    const noteTimer = window.setTimeout(() => {
+      this.pendingTimeouts.delete(noteTimer);
       this.emitNote({
         id: Math.random().toString(36).substring(2, 9),
         timestamp: Date.now(),
@@ -611,10 +786,21 @@ class StrudelAudioEngine {
         step: Math.round(ev.timeOffset * 16),
       });
     }, delayMs);
+    this.pendingTimeouts.add(noteTimer);
 
     // Create voice routing
     const voiceGain = this.ctx.createGain();
     voiceGain.gain.setValueAtTime(layer.gain, time);
+
+    // Registered so hush() can silence voices that are already scheduled at
+    // future timestamps. Dropped again once the voice can no longer sound.
+    this.activeVoiceGains.add(voiceGain);
+    const releaseMs = delayMs + Math.max(layer.decay, 1) * 1000 + 2500;
+    const releaseTimer = window.setTimeout(() => {
+      this.activeVoiceGains.delete(voiceGain);
+      this.pendingTimeouts.delete(releaseTimer);
+    }, releaseMs);
+    this.pendingTimeouts.add(releaseTimer);
 
     const voicePanner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
     if (voicePanner) {
@@ -735,8 +921,33 @@ class StrudelAudioEngine {
       osc2.start(time);
       osc1.stop(time + 0.3);
       osc2.stop(time + 0.3);
+    } else if (soundName.startsWith('tom')) {
+      // Tom: pitched sine body with a downward sweep, longer than a rimshot
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(220, time);
+      osc.frequency.exponentialRampToValueAtTime(88, time + 0.18);
+      gain.gain.setValueAtTime(0.9, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + Math.max(0.25, decay));
+      osc.connect(gain);
+      gain.connect(dest);
+      osc.start(time);
+      osc.stop(time + Math.max(0.3, decay));
+
+      // Small noise attack so it reads as a skin, not a sine blip
+      this.playNoiseBurst(time, dest, 0.03, 900, 'bandpass', 0.35);
+    } else if (soundName.startsWith('shaker')) {
+      // Shaker: brighter and softer than a closed hat, with a slower attack
+      this.playNoiseBurst(time, dest, Math.min(0.11, Math.max(0.06, decay)), 9500, 'highpass', 0.32);
+    } else if (soundName.startsWith('cr') || soundName.startsWith('crash')) {
+      // Crash: long bright wash. Deliberately the longest drum voice.
+      this.playNoiseBurst(time, dest, Math.max(0.9, decay), 5200, 'highpass', 0.55);
+      this.playNoiseBurst(time, dest, Math.max(0.5, decay * 0.6), 11000, 'highpass', 0.3);
     } else {
-      // General percussion
+      // Generic texture percussion ('perc'). Shares one voice by design —
+      // see src/audio/vocabulary.ts, which tells the model not to rely on it
+      // for distinct instruments.
       this.playNoiseBurst(time, dest, 0.1, 2400, 'bandpass', 0.6);
     }
   }
@@ -888,7 +1099,12 @@ class StrudelAudioEngine {
 
     const noteRegex = /^([a-g])([#b]?)(-?\d+)?$/;
     const match = clean.match(noteRegex);
-    if (!match) return 261.63; // Default middle C
+    // Previously defaulted to 261.63 (middle C). That turned every unknown
+    // token into a sustained sawtooth tone — `s("glitch")` and the fallback
+    // generator's `s("cabasa(5,8)")` both played middle C rather than a drum.
+    // Returning null makes the caller skip the event, so an unrecognised name
+    // is silent instead of audibly wrong.
+    if (!match) return null;
 
     const note = match[1];
     const accidental = match[2];

@@ -348,7 +348,15 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setSelectedIndex((prev) => (prev - 1 + filteredSuggestions.length) % Math.max(1, filteredSuggestions.length));
-      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || filteredSuggestions.length > 0)) {
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        // Requires a modifier.
+        //
+        // The condition used to be `(e.ctrlKey || e.metaKey || filteredSuggestions.length > 0)`,
+        // and the suggestion list is non-empty in the common case — so a plain
+        // Enter ANYWHERE in the document was intercepted and replaced the
+        // user's prompt with whichever suggestion happened to be highlighted.
+        // On a phone that meant the keyboard's Go key could never submit, so
+        // the one-tap path to the app's core action did not exist.
         if (filteredSuggestions[selectedIndex]) {
           e.preventDefault();
           onSelectPrompt(filteredSuggestions[selectedIndex].promptText);
@@ -397,7 +405,7 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
             type="button"
             onClick={handleSurpriseMe}
             className="px-2.5 py-1 rounded-md bg-pink-500/15 hover:bg-pink-500/25 text-pink-600 border border-pink-500/40 text-[10px] font-bold flex items-center gap-1.5 transition-all uppercase shadow-sm"
-            title="Randomly generate algorithmic prompt recipe"
+            title="Randomly generate algorithmic prompt recipe" aria-label="Randomly generate algorithmic prompt recipe"
           >
             <Shuffle className="w-2.5 h-2.5" />
             <span>Surprise Me</span>

@@ -13,7 +13,8 @@ import { AIEngineSelectorModal } from './components/AIEngineSelectorModal';
 import { STARTER_PRESETS } from './data/presets';
 import { audioEngine } from './engine/audioEngine';
 import { aiManager } from './ai/aiManager';
-import { AIExplanationResult, AIVariation, TrackPreset, SavedSession, AIEngineProgress, AIEngineType } from './types';
+import { statusText } from './ai/progressText';
+import { AIExplanationResult, AIVariation, TrackPreset, SavedSession, AIEngineProgress, AIEngineType, AI_ENGINE_LABELS } from './types';
 
 import {
   getSavedSessions,
@@ -22,6 +23,13 @@ import {
   setActiveSessionId,
 } from './utils/sessionStorage';
 import { Play, Square, Music, Sparkles, Terminal, BookOpen, Layers } from 'lucide-react';
+
+/**
+ * Ceiling on stored variations. Each one holds a full pattern, and sessions
+ * are persisted to localStorage — whose quota is comfortably reachable on iOS
+ * Safari, where an over-quota write is also silently dropped.
+ */
+const MAX_VARIATIONS = 40;
 
 export default function App() {
   const [currentTrack, setCurrentTrack] = useState<TrackPreset>(STARTER_PRESETS[0]);
@@ -43,6 +51,23 @@ export default function App() {
   const [explanation, setExplanation] = useState<AIExplanationResult | null>(null);
   const [variations, setVariations] = useState<AIVariation[]>([]);
   const [lastTweakDiffs, setLastTweakDiffs] = useState<string[]>([]);
+
+  /**
+   * Which engine produced the pattern currently on screen, and why the
+   * selected one did not, when they differ. Rendered as a badge so a user can
+   * always tell real model output from the built-in rule-based templates.
+   */
+  const [resultSource, setResultSource] = useState<{
+    producedBy: AIEngineType;
+    degraded?: string;
+  } | null>(null);
+
+  /**
+   * The pattern as it was immediately before the last AI overwrite, so a bad
+   * generation is recoverable. Tweak and fix both used to call `setCode()`
+   * unconditionally with no way back.
+   */
+  const [codeBeforeAI, setCodeBeforeAI] = useState<string | null>(null);
 
   // Modals state
   const [isPresetsOpen, setIsPresetsOpen] = useState<boolean>(false);
@@ -275,9 +300,19 @@ export default function App() {
   ) => {
     setIsGenerating(true);
     setErrorMessage(null);
+
+    // Unlock audio NOW, while we are still inside the user's click. iOS Safari
+    // refuses to resume a suspended AudioContext outside a gesture, and the
+    // `await` below leaves that gesture — which is why generated patterns used
+    // to report success and then play nothing on iPhone.
+    audioEngine.unlock();
+
     try {
-      const generated = await aiManager.generateTrack(prompt, style, complexity, bpm);
+      const result = await aiManager.generateTrack(prompt, style, complexity, bpm);
+      const generated = result.data;
+      setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
       if (generated && generated.code) {
+        setCodeBeforeAI(code);
         setCode(generated.code);
         if (generated.bpm) {
           setBpm(generated.bpm);
@@ -327,11 +362,17 @@ export default function App() {
   // 2. Tweak Pattern with Natural Language
   const handleTweakCode = async (instruction: string) => {
     setIsTweaking(true);
+    audioEngine.unlock();
     try {
-      const tweaked = await aiManager.tweakPattern(code, instruction);
+      const result = await aiManager.tweakPattern(code, instruction);
+      const tweaked = result.data;
+      setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
       if (tweaked && tweaked.code) {
+        setCodeBeforeAI(code);
         setCode(tweaked.code);
-        setLastTweakDiffs(tweaked.diffHighlights || [tweaked.summary]);
+        setLastTweakDiffs(
+          tweaked.diffHighlights?.length ? tweaked.diffHighlights : [tweaked.summary],
+        );
 
         // Evaluate updated code live
         const evalRes = audioEngine.evaluate(tweaked.code);
@@ -357,9 +398,10 @@ export default function App() {
     setIsExplaining(true);
     setActiveTab('breakdown');
     try {
-      const res = await aiManager.explainCode(code);
-      if (res) {
-        setExplanation(res);
+      const result = await aiManager.explainCode(code);
+      setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
+      if (result.data) {
+        setExplanation(result.data);
       }
     } catch (err: any) {
       console.error('Explanation error:', err);
@@ -372,7 +414,9 @@ export default function App() {
   const handleRequestVariations = async (mood: string) => {
     setIsLoadingVariations(true);
     try {
-      const res = await aiManager.suggestVariations(code, mood);
+      const result = await aiManager.suggestVariations(code, mood);
+      setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
+      const res = result.data;
       if (res && res.variations && res.variations.length > 0) {
         const incoming = res.variations.map((v: AIVariation) => ({
           ...v,
@@ -380,12 +424,14 @@ export default function App() {
           createdAt: Date.now(),
         }));
 
-        // Accumulate variations so users can regenerate multiple times
+        // Accumulate across regenerations, but drop exact duplicates and cap
+        // the list. This previously appended `incoming` wholesale whenever
+        // every item was a duplicate, so repeated clicks grew the array — and
+        // the persisted session — without bound until localStorage filled up.
         setVariations((prev) => {
           const existingCodes = new Set(prev.map((p) => p.code.trim()));
           const fresh = incoming.filter((v) => !existingCodes.has(v.code.trim()));
-          const toAdd = fresh.length > 0 ? fresh : incoming;
-          return [...toAdd, ...prev];
+          return [...fresh, ...prev].slice(0, MAX_VARIATIONS);
         });
 
         // Auto-save generated variations to active session if exists
@@ -394,7 +440,12 @@ export default function App() {
           const sessions = getSavedSessions();
           const target = sessions.find((s) => s.id === activeId);
           if (target) {
-            target.variations = [...incoming, ...(target.variations || [])];
+            // Capped for the same reason as the in-memory list: sessions are
+            // persisted to localStorage, whose quota is small on iOS Safari.
+            target.variations = [...incoming, ...(target.variations || [])].slice(
+              0,
+              MAX_VARIATIONS,
+            );
             saveSession(target);
           }
         }
@@ -431,17 +482,29 @@ export default function App() {
   const handleFixWithAI = async () => {
     if (!errorMessage) return;
     setIsFixing(true);
+    audioEngine.unlock();
     try {
-      const fixed = await aiManager.fixCode(code, errorMessage);
-      if (fixed && fixed.fixedCode) {
-        setCode(fixed.fixedCode);
-        setErrorMessage(null);
-        setLastTweakDiffs([fixed.fixExplanation || fixed.reason]);
+      const result = await aiManager.fixCode(code, errorMessage);
+      const fixed = result.data;
+      setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
 
+      if (fixed && fixed.fixedCode) {
         const evalRes = audioEngine.evaluate(fixed.fixedCode);
+
+        // Only accept a fix that actually parses. The old code overwrote the
+        // buffer and cleared the error unconditionally, so a bad "fix" left
+        // the user with unusable code, no error to explain it, and no undo.
         if (evalRes.success) {
+          setCodeBeforeAI(code);
+          setCode(fixed.fixedCode);
+          setErrorMessage(null);
+          setLastTweakDiffs([fixed.fixExplanation || fixed.reason]);
           audioEngine.play();
           setIsPlaying(true);
+        } else {
+          setErrorMessage(
+            `${errorMessage} — the suggested fix did not parse either, so your code was left as it was.`,
+          );
         }
       }
     } catch (err: any) {
@@ -457,7 +520,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--app-bg)] text-gray-900 flex flex-col selection:bg-emerald-500/30">
+    <div className="min-h-[100dvh] bg-[var(--app-bg)] text-gray-900 flex flex-col selection:bg-emerald-500/30">
       {/* Studio Header with Sessions & REPL Export */}
       <StudioHeader
         isPlaying={isPlaying}
@@ -536,6 +599,46 @@ export default function App() {
         {/* Natural Language Prompt Bar */}
         <AIPromptBar onGenerate={handleGenerateAI} isLoading={isGenerating} aiProgress={aiProgress} />
 
+        {/*
+          Provenance badge. The payoff of `AIEngineResult`: whatever happens,
+          the user can see which engine actually wrote the pattern in front of
+          them, and can undo it. Previously a failed cloud call, a broken local
+          worker and a real model answer were indistinguishable on screen.
+        */}
+        {resultSource && (
+          <div
+            role="status"
+            className={`mt-3 rounded-xl border px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] ${
+              resultSource.degraded
+                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                : 'bg-gray-50 border-gray-200 text-gray-700'
+            }`}
+          >
+            <span className="font-bold">
+              Written by: {AI_ENGINE_LABELS[resultSource.producedBy]}
+            </span>
+            {resultSource.degraded && (
+              <span>
+                {AI_ENGINE_LABELS[activeEngine]} could not run — {resultSource.degraded}
+              </span>
+            )}
+            {codeBeforeAI !== null && codeBeforeAI !== code && (
+              <button
+                onClick={() => {
+                  setCode(codeBeforeAI);
+                  setCodeBeforeAI(null);
+                  setResultSource(null);
+                  const res = audioEngine.evaluate(codeBeforeAI);
+                  setErrorMessage(res.success ? null : res.error || 'Evaluation failed');
+                }}
+                className="ml-auto min-h-11 sm:min-h-0 sm:py-1 px-2.5 rounded-lg font-bold underline hover:no-underline"
+              >
+                Undo, restore my pattern
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Real-time Oscilloscope & Radar Visualizer */}
         <PatternVisualizer isPlaying={isPlaying} bpm={bpm} />
 
@@ -587,7 +690,7 @@ export default function App() {
                     {isExplaining && aiProgress && aiProgress.status === 'downloading'
                       ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
                       : isExplaining && aiProgress
-                      ? aiProgress.text || 'Analyzing...'
+                      ? statusText(aiProgress, 'Analyzing...')
                       : 'Explain Code'}
                   </span>
                 </button>
@@ -634,6 +737,7 @@ export default function App() {
                 variations={variations}
                 isTweaking={isTweaking}
                 isLoadingVariations={isLoadingVariations}
+                aiProgress={aiProgress}
                 lastTweakDiffs={lastTweakDiffs}
                 onSaveVariationToSession={handleSaveVariationToSession}
                 onAddCustomVariation={handleAddCustomVariation}
@@ -707,7 +811,10 @@ export default function App() {
           <div className="flex items-center gap-3 text-gray-500">
             <span>Engine: Strudel Mini-Notation</span>
             <span>•</span>
-            <span>AI: Gemini 3.7 Flash</span>
+            {/* Reads the live engine. This used to be the hardcoded string
+                "AI: Gemini 3.7 Flash", which was shown even when no model had
+                been contacted at all. */}
+            <span>AI: {AI_ENGINE_LABELS[activeEngine]}</span>
           </div>
         </div>
       </footer>

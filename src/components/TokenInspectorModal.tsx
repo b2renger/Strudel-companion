@@ -205,7 +205,7 @@ export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 animate-fade-in font-sans">
       <div
-        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-gray-900 animate-scale-up"
+        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-2xl max-h-[92dvh] flex flex-col shadow-2xl overflow-hidden text-gray-900 animate-scale-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Top Header */}
@@ -272,7 +272,7 @@ export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
             <button
               onClick={() => onApplyTokenValue(token, customValue, true)}
               className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-500/90 text-white font-bold text-xs flex items-center gap-1 uppercase transition-all active:scale-95 shadow-sm shrink-0"
-              title="Apply modification and immediately evaluate sound"
+              title="Apply modification and immediately evaluate sound" aria-label="Apply modification and immediately evaluate sound"
             >
               <Play className="w-3 h-3 fill-black" />
               <span>Apply & Live Eval</span>
@@ -1131,7 +1131,7 @@ export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
                   onOpenAddBlockBehind(token);
                 }}
                 className="px-3 py-2 rounded-lg bg-pink-500/15 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/40 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs"
-                title="Open Add Block palette to insert any sound/effect behind this block"
+                title="Open Add Block palette to insert any sound/effect behind this block" aria-label="Open Add Block palette to insert any sound/effect behind this block"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add Block Behind</span>

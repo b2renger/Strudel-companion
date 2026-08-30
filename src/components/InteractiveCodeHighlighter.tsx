@@ -168,7 +168,7 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
           const lastTok = sortedLineTokens.length > 0 ? sortedLineTokens[sortedLineTokens.length - 1] : null;
           onOpenAddBlock(lastTok, lineNum);
         }}
-        className="opacity-40 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 my-0.5 text-[9px] px-1.5 py-0.5 rounded-md bg-gray-100 hover:bg-pink-500/20 text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/40 inline-flex items-center gap-0.5 font-sans font-bold uppercase shrink-0 shadow-2xs"
+        className="opacity-60 hover:opacity-100 focus:opacity-100 transition-opacity ml-2 my-0.5 text-[9px] px-1.5 py-0.5 rounded-md bg-gray-100 hover:bg-pink-500/20 text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/40 inline-flex items-center gap-0.5 font-sans font-bold uppercase shrink-0 shadow-2xs"
         title={`Add block to line ${lineNum}`}
       >
         <Plus className="w-2.5 h-2.5 text-pink-500" />
@@ -188,28 +188,28 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
       if (!part) return null;
       if (part === 'stack' || part === 's' || part === 'note') {
         return (
-          <span key={idx} className="text-pink-400 font-bold">
+          <span key={idx} className="text-pink-700 font-bold">
             {part}
           </span>
         );
       }
       if (part.startsWith('.')) {
         return (
-          <span key={idx} className="text-purple-300 font-semibold">
+          <span key={idx} className="text-purple-700 font-semibold">
             {part}
           </span>
         );
       }
       if (part === '"' || part === "'") {
         return (
-          <span key={idx} className="text-amber-300 font-bold">
+          <span key={idx} className="text-amber-700 font-bold">
             {part}
           </span>
         );
       }
       if (['(', ')', '[', ']', '{', '}', ',', ';'].includes(part)) {
         return (
-          <span key={idx} className="text-gray-500 font-bold">
+          <span key={idx} className="text-gray-600 font-bold">
             {part}
           </span>
         );
@@ -299,7 +299,7 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
           <button
             onClick={onSwitchToRawEdit}
             className="px-2.5 py-1 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-900 border border-gray-200 hover:border-emerald-500/40 text-[10px] font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-sm"
-            title="Switch to direct keyboard text editing"
+            title="Switch to direct keyboard text editing" aria-label="Switch to direct keyboard text editing"
           >
             <Edit3 className="w-3 h-3 text-emerald-600" />
             <span>Keyboard Edit Mode</span>
@@ -321,8 +321,15 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
                 className="flex items-start group hover:bg-gray-50 rounded px-1 -mx-1 transition-colors"
               >
                 {/* Line Number */}
+                {/*
+                  Line-height goes in the inline style, not an interpolated
+                  Tailwind class: the scanner only sees literal strings, so
+                  leading-[${...}px] generated no CSS at all and the numbers
+                  drifted out of register with the code they label.
+                */}
                 <div
-                  className={`w-7 shrink-0 text-right pr-3 select-none text-[10px] font-mono leading-[${fontSize * 1.8}px] pt-0.5 ${
+                  style={{ lineHeight: `${fontSize * 1.8}px` }}
+                  className={`w-7 shrink-0 text-right pr-3 select-none text-[10px] font-mono pt-0.5 ${
                     isEvalFlashing ? 'text-emerald-600 font-bold' : 'text-gray-500 group-hover:text-gray-600'
                   }`}
                 >

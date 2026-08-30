@@ -60,6 +60,25 @@ export interface StrudelToken {
   endIndex: number;
   line: number;
   layerIndex: number;
+  /**
+   * Absolute span of the enclosing `.method(...)` call, when this token is a
+   * method or one of its parameters.
+   *
+   * Recorded at parse time so removal never has to rediscover it. The old
+   * `removeBlockInCode` scanned backwards with `beforeToken.lastIndexOf('.')`,
+   * which lands on the decimal point inside a literal like `0.3` — removing
+   * `.gain` from `.lpf(1400).decay(0.3).gain(0.85)` cut from that decimal
+   * point and left `...decay(0` behind, with unbalanced parentheses.
+   */
+  methodSpan?: { start: number; end: number };
+  /**
+   * Which occurrence of `raw` this is within the file (0-based).
+   *
+   * Needed because the stale-index fallback used a plain `code.indexOf(raw)`,
+   * which for a token like `hh`, `4` or `0.8` always resolved to the FIRST
+   * occurrence — so clicking the fourth `hh` edited the first one.
+   */
+  occurrence?: number;
   context: {
     layerRole?: 'drums' | 'bass' | 'chords' | 'melody' | 'synth' | 'fx' | 'other';
     parentMethod?: string;
@@ -164,6 +183,74 @@ function classifyParamToken(methodName: string): TokenCategory {
   if (m === 'slow') return 'effect_slow';
   if (m === 'bank') return 'effect_bank';
   return 'general';
+}
+
+/**
+ * Finds `.name(...)` calls, matching parentheses by depth and ignoring any
+ * that appear inside quotes.
+ *
+ * Replaces a `[^)]*` regex that could not cross a nested `)`, and therefore
+ * mis-captured every chain containing a nested call such as
+ * `.lpf(sine.range(400, 3200))`.
+ */
+function scanMethodCalls(
+  text: string,
+): Array<{ name: string; arg: string; start: number; end: number; argStart: number }> {
+  const calls: Array<{ name: string; arg: string; start: number; end: number; argStart: number }> = [];
+  let quote: string | null = null;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (quote) {
+      if (ch === quote && text[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch !== '.') continue;
+
+    const nameMatch = /^\.([a-zA-Z0-9_]+)\(/.exec(text.slice(i));
+    if (!nameMatch) continue;
+
+    const name = nameMatch[1];
+    const argStart = i + nameMatch[0].length;
+
+    // Walk to the matching close paren.
+    let depth = 1;
+    let j = argStart;
+    let innerQuote: string | null = null;
+    for (; j < text.length; j++) {
+      const c = text[j];
+      if (innerQuote) {
+        if (c === innerQuote && text[j - 1] !== '\\') innerQuote = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        innerQuote = c;
+        continue;
+      }
+      if (c === '(') depth++;
+      else if (c === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) continue; // unbalanced; leave it alone
+
+    calls.push({
+      name,
+      arg: text.slice(argStart, j),
+      start: i,
+      end: j + 1,
+      argStart,
+    });
+    i = j; // continue scanning after this call
+  }
+
+  return calls;
 }
 
 /**
@@ -378,7 +465,26 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
     const patternContent = match[3]; // the string inside quotes
     const quoteChar = match[2];
     const patternStrOffset = matchStart + fullMatch.indexOf(quoteChar) + 1;
-    const restOfChain = match[4]; // chained effects like .lpf(1200).decay(0.3)
+    // Chained effects, e.g. `.lpf(1200).decay(0.3)`.
+    //
+    // `layerRegex`'s trailing lookahead includes `\)\s*;?\s*$`, so on a
+    // single-layer statement it stops JUST BEFORE the final `)` — leaving the
+    // last effect unterminated (`.gain(0.85` with no closer). That call could
+    // then never be tokenized, so the last effect in such a statement was
+    // invisible to the inspector and could not be clicked or removed.
+    // Re-balance by taking the missing closers back from the source.
+    let restOfChain = match[4];
+    const chainStart = matchStart + (fullMatch.length - restOfChain.length);
+    let depth = 0;
+    for (const ch of restOfChain) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+    }
+    for (let k = chainStart + restOfChain.length; depth > 0 && k < code.length; k++) {
+      restOfChain += code[k];
+      if (code[k] === '(') depth++;
+      else if (code[k] === ')') depth--;
+    }
 
     // Calculate line numbers
     const linesBefore = code.substring(0, matchStart).split('\n').length;
@@ -436,16 +542,23 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
     layerTokens.push(...patternTokens);
 
     // 2. Parse method chains and parameters in restOfChain (e.g. .lpf(1200).gain(0.8).sound("sawtooth"))
-    const effectRegex = /\.([a-zA-Z0-9_]+)\(\s*([^)]*)\s*\)/g;
-    let effMatch: RegExpExecArray | null;
-    const chainBaseOffset = matchStart + fullMatch.indexOf(restOfChain);
+    const chainBaseOffset = chainStart;
 
-    while ((effMatch = effectRegex.exec(restOfChain)) !== null) {
-      const effMethod = effMatch[1]; // e.g. 'lpf' or 's' or 'sound'
-      const effParam = effMatch[2]; // e.g. '1200' or '"sawtooth"'
-      const effStart = chainBaseOffset + effMatch.index;
-      const paramOffsetInside = effMatch[0].indexOf(effParam);
-      const paramStart = effStart + paramOffsetInside;
+    // Depth-scanned rather than regex-matched.
+    //
+    // The old pattern was /\.([a-zA-Z0-9_]+)\(\s*([^)]*)\s*\)/g, and `[^)]*`
+    // cannot cross a nested ')'. On `.lpf(sine.range(400, 3200).slow(4))` it
+    // captured `.lpf(sine.range(400, 3200)` and produced a param token whose
+    // raw text was `sine.range(400, 3200` — so any inspector edit to it
+    // spliced unbalanced code back into the file.
+    for (const call of scanMethodCalls(restOfChain)) {
+      const effMethod = call.name;
+      const effParam = call.arg;
+      const effStart = chainBaseOffset + call.start;
+      const paramStart = chainBaseOffset + call.argStart;
+      // Absolute span of the whole `.name(...)` call, carried on the tokens so
+      // removal does not have to rediscover it by scanning backwards for a dot.
+      const methodSpan = { start: effStart, end: chainBaseOffset + call.end };
 
       // Method token
       layerTokens.push({
@@ -458,6 +571,7 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
         endIndex: effStart + effMethod.length + 1, // includes the leading dot
         line: linesBefore,
         layerIndex: layerIdx,
+        methodSpan,
         context: {
           layerRole: role,
           parentMethod: effMethod,
@@ -495,6 +609,7 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
           endIndex: paramStart + effParam.length,
           line: linesBefore,
           layerIndex: layerIdx,
+          methodSpan,
           context: {
             layerRole: role,
             parentMethod: effMethod,
@@ -546,6 +661,23 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
 
   allTokens.sort((a, b) => a.startIndex - b.startIndex);
 
+  // Stamp each token with which occurrence of its own raw text it is, counted
+  // over the whole source. `findTokenExactRange` uses this to re-locate a
+  // token after the buffer has shifted, instead of falling back to the first
+  // match anywhere in the file.
+  for (const token of allTokens) {
+    if (!token.raw) continue;
+    // Count real occurrences up to this token's position, so the ordinal stays
+    // correct even for tokens the parser emits out of textual order.
+    let count = 0;
+    let idx = code.indexOf(token.raw);
+    while (idx !== -1 && idx < token.startIndex) {
+      count++;
+      idx = code.indexOf(token.raw, idx + 1);
+    }
+    token.occurrence = count;
+  }
+
   return { layers, allTokens };
 }
 
@@ -578,6 +710,22 @@ export function findTokenExactRange(
     };
   }
 
+  // 2. If we know which occurrence this token is, go straight to it. This is
+  // the reliable path, and it is exact even after the text has shifted.
+  if (typeof token.occurrence === 'number') {
+    let searchFrom = 0;
+    let found = -1;
+    for (let n = 0; n <= token.occurrence; n++) {
+      found = code.indexOf(targetRaw, searchFrom);
+      if (found === -1) break;
+      searchFrom = found + 1;
+    }
+    if (found !== -1) {
+      return { start: found, end: found + targetRaw.length };
+    }
+  }
+
+  // 3. Otherwise search near the original position.
   const searchRadius = 150;
   const searchStart = Math.max(0, (token.startIndex || 0) - searchRadius);
   const searchEnd = Math.min(code.length, (token.endIndex || 0) + searchRadius);
@@ -589,16 +737,16 @@ export function findTokenExactRange(
     return { start: actualStart, end: actualStart + targetRaw.length };
   }
 
-  // 3. Fallback: Search globally in code
-  const globalOffset = code.indexOf(targetRaw);
-  if (globalOffset !== -1) {
-    return { start: globalOffset, end: globalOffset + targetRaw.length };
-  }
-
-  return {
-    start: Math.max(0, token.startIndex || 0),
-    end: Math.max(0, token.endIndex || 0),
-  };
+  // 4. Give up rather than guess.
+  //
+  // This used to fall back to `code.indexOf(targetRaw)` — the FIRST occurrence
+  // anywhere in the file. For a token whose raw text is `hh`, `bd`, `4` or
+  // `0.8` that is almost never the one the user clicked, so clicking the
+  // fourth `hh` silently edited the first. Returning a zero-width range at the
+  // original position makes callers no-op instead of corrupting the wrong
+  // part of the pattern.
+  const safe = Math.min(Math.max(0, token.startIndex || 0), code.length);
+  return { start: safe, end: safe };
 }
 
 /**
@@ -840,37 +988,33 @@ export function removeBlockInCode(
   const { start, end } = findTokenExactRange(originalCode, token);
   const ctx = getPatternQuoteContext(originalCode, start, end);
 
-  // 1. If removing a method/effect (e.g. .lpf(1200), .gain(0.8))
-  if (token.type === 'method' || token.category.startsWith('effect_')) {
-    // Find leading dot
-    const beforeToken = originalCode.substring(0, start);
-    const dotIdx = beforeToken.lastIndexOf('.');
-    const nextParenRel = originalCode.substring(end).indexOf(')');
-
-    if (dotIdx !== -1 && nextParenRel !== -1) {
-      const methodStart = dotIdx;
-      const methodEnd = end + nextParenRel + 1;
+  // 1 & 2. Removing a method (.lpf(1200)) or one of its parameters removes the
+  // whole call. Both use the span recorded at parse time.
+  //
+  // This used to scan backwards with `beforeToken.lastIndexOf('.')`. Method
+  // tokens already include their leading dot, so `beforeToken` excluded it and
+  // the search found the PREVIOUS dot — very often the decimal point inside a
+  // literal. Removing `.gain` from
+  //   note("a1").s("sawtooth").lpf(1400).decay(0.3).gain(0.85)
+  // cut from the `.` in `0.3` and produced
+  //   note("a1").s("sawtooth").lpf(1400).decay(0
+  // — unbalanced parentheses and destroyed code.
+  if (
+    token.type === 'method' ||
+    token.type === 'param' ||
+    token.category.startsWith('effect_')
+  ) {
+    if (token.methodSpan) {
       return (
-        originalCode.substring(0, methodStart) +
-        originalCode.substring(methodEnd)
+        originalCode.substring(0, token.methodSpan.start) +
+        originalCode.substring(token.methodSpan.end)
       );
     }
-  }
 
-  // 2. If removing a parameter inside a method call (e.g. 1200 in .lpf(1200))
-  if (token.type === 'param') {
-    // Check if it's the only argument of its method; remove the whole method
-    const beforeToken = originalCode.substring(0, start);
-    const dotIdx = beforeToken.lastIndexOf('.');
-    const nextParenRel = originalCode.substring(end).indexOf(')');
-    if (dotIdx !== -1 && nextParenRel !== -1) {
-      const methodStart = dotIdx;
-      const methodEnd = end + nextParenRel + 1;
-      return (
-        originalCode.substring(0, methodStart) +
-        originalCode.substring(methodEnd)
-      );
-    }
+    // No recorded span (a token from an older parse). Rather than guess with a
+    // backwards scan, refuse — leaving the code intact is always better than
+    // corrupting it.
+    return originalCode;
   }
 
   // 3. If inside mini-notation quotes (samples, notes, rhythms, rests, chords)

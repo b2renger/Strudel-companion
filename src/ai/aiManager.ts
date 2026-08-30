@@ -1,20 +1,59 @@
 /**
- * Central Client-Side & Cloud AI Engine Orchestrator.
- * Manages model loading state, Web Worker communication, Chrome Built-in AI,
- * rule-based instant heuristics, and seamless fallbacks.
+ * Orchestrator for every AI engine.
+ *
+ * The governing rule of this file is that THE UI IS NEVER LIED TO.
+ *
+ * The previous version wrapped all fifteen call sites in
+ * `try { ... } catch { return heuristic }` without ever emitting progress, so
+ * a user could not distinguish a working model from a broken one — a 404 from
+ * a missing server, a null worker after a page reload, and a genuine model
+ * answer all looked identical on screen. That made "are the engines working?"
+ * unanswerable by construction, which is why every engine had been broken for
+ * a long time without anyone noticing.
+ *
+ * Now: every method returns `AIEngineResult<T>` carrying `producedBy`, and
+ * every fallback both sets `degraded` and emits an error progress event.
  */
 
 import {
   AIEngineType,
   AIEngineProgress,
+  AIEngineResult,
   AIGeneratedTrack,
   AITweakResult,
   AIExplanationResult,
   AIVariation,
   AIWorkerRequest,
   AIWorkerResponse,
+  DeviceProfile,
+  AI_ENGINE_LABELS,
 } from '../types';
 import { chromeBuiltInAi } from './chromeBuiltInAi';
+import { probeDevice } from './deviceProbe';
+import { DEFAULT_MODEL_ID, getModelSpec } from './models';
+import { getApiKey, hasApiKey } from './apiKeyStore';
+import {
+  callGemini,
+  GENERATE_SCHEMA,
+  TWEAK_SCHEMA,
+  EXPLAIN_SCHEMA,
+  VARIATION_SCHEMA,
+} from './geminiClient';
+import {
+  STRUDEL_SYSTEM_PROMPT,
+  buildGeneratePrompt,
+  buildTweakPrompt,
+  buildExplainPrompt,
+  buildVariationPrompt,
+  buildFixPrompt,
+  VARIATION_RECIPES,
+} from './prompts';
+import {
+  parseGeneratedTrack,
+  parseTweakResult,
+  parseExplanationResult,
+  parseVariationResult,
+} from './outputParser';
 import {
   generateHeuristicTrack,
   tweakHeuristicCode,
@@ -24,61 +63,167 @@ import {
 
 export type AIProgressListener = (progress: AIEngineProgress) => void;
 export type AIEngineChangeListener = (engine: AIEngineType) => void;
+export type AICapabilityListener = (caps: EngineCapabilities) => void;
+
+export interface EngineCapabilities {
+  device: DeviceProfile | null;
+  /** A real adapter was obtained, so local models can at least be attempted. */
+  webgpu: boolean;
+  chromeBuiltIn: boolean;
+  chromeBuiltInReason?: string;
+  hasGeminiKey: boolean;
+}
+
+const ENGINE_STORAGE_KEY = 'strudel_ai_engine';
+const MODEL_STORAGE_KEY = 'strudel_ai_model';
+
+/** Inference can be slow on a weak GPU, but it must not hang forever. */
+const INFERENCE_TIMEOUT_MS = 180_000;
+/** A cold model download over a slow link legitimately takes a long time. */
+const LOAD_TIMEOUT_MS = 30 * 60_000;
 
 class AIManager {
-  private activeEngine: AIEngineType = 'cloud-gemini';
-  private selectedModelId: string = 'gemma-2-2b-it-q4f16_1-MLC';
+  /**
+   * Defaults to the one engine guaranteed to work with no key, no download
+   * and no network. The previous default was `cloud-gemini`, which on a
+   * static host cannot work at all.
+   */
+  private activeEngine: AIEngineType = 'instant-heuristic';
+  private selectedModelId: string = DEFAULT_MODEL_ID;
+
   private worker: Worker | null = null;
-  private pendingRequests: Map<string, { resolve: (val: any) => void; reject: (err: any) => void }> = new Map();
-  private progressListeners: Set<AIProgressListener> = new Set();
-  private engineChangeListeners: Set<AIEngineChangeListener> = new Set();
+  private pending = new Map<
+    string,
+    { resolve: (v: any) => void; reject: (e: any) => void; timer: number }
+  >();
+
+  private progressListeners = new Set<AIProgressListener>();
+  private engineChangeListeners = new Set<AIEngineChangeListener>();
+  private capabilityListeners = new Set<AICapabilityListener>();
+
+  private capabilities: EngineCapabilities = {
+    device: null,
+    webgpu: false,
+    chromeBuiltIn: false,
+    hasGeminiKey: false,
+  };
 
   private currentProgress: AIEngineProgress = {
     status: 'ready',
-    text: 'Cloud Gemini 3.7 Flash Connected',
-    progress: 1.0,
+    text: 'Built-in pattern rules ready — no download, works offline.',
+    progress: 1,
   };
 
-  private isWebGPUSupported: boolean = false;
-  private isChromeBuiltInSupported: boolean = false;
+  /** Cancels the in-flight cloud request, when there is one. */
+  private cloudAbort: AbortController | null = null;
 
   constructor() {
-    this.checkHardwareCapabilities();
-    this.loadSavedEnginePreference();
-  }
+    this.restorePreferences();
+    void this.refreshCapabilities();
 
-  /**
-   * Check WebGPU and Chrome Built-in AI support in current browser.
-   */
-  async checkHardwareCapabilities() {
+    // Surface Gemini Nano's download progress on the same channel as every
+    // other engine, so the UI has one place to read from.
+    chromeBuiltInAi.setProgressSink((text, fraction) => {
+      this.emitProgress({
+        status: typeof fraction === 'number' ? 'downloading' : 'ready',
+        text,
+        progress: typeof fraction === 'number' ? fraction : 0.5,
+      });
+    });
+
     if (typeof window !== 'undefined') {
-      // Check WebGPU
-      this.isWebGPUSupported = 'gpu' in navigator;
-
-      // Check Chrome Built-in AI
-      const nanoCheck = await chromeBuiltInAi.isAvailable();
-      this.isChromeBuiltInSupported = nanoCheck.available;
+      // Free GPU memory when the tab goes away. `pagehide` fires on mobile
+      // Safari where `beforeunload` does not.
+      window.addEventListener('pagehide', () => this.releaseWorker());
     }
   }
 
-  getCapabilities() {
-    return {
-      webgpu: this.isWebGPUSupported,
-      chromeBuiltIn: this.isChromeBuiltInSupported,
+  // -------------------------------------------------------------------------
+  // Capabilities
+  // -------------------------------------------------------------------------
+
+  /**
+   * Probes the real hardware. Listeners are notified when it completes,
+   * because the results arrive asynchronously — the engine picker used to
+   * read capabilities once at mount, before the Chrome AI probe had resolved,
+   * and so reported "unavailable" permanently even where it worked.
+   */
+  async refreshCapabilities(): Promise<EngineCapabilities> {
+    const device = await probeDevice();
+    const nano = await chromeBuiltInAi.isAvailable();
+
+    this.capabilities = {
+      device,
+      webgpu: device.tier !== 'no-webgpu' && device.tier !== 'no-adapter',
+      chromeBuiltIn: nano.available,
+      chromeBuiltInReason: nano.reason,
+      hasGeminiKey: hasApiKey(),
     };
+    this.capabilityListeners.forEach((fn) => fn(this.capabilities));
+    return this.capabilities;
   }
 
-  private loadSavedEnginePreference() {
+  getCapabilities(): EngineCapabilities {
+    return this.capabilities;
+  }
+
+  onCapabilities(listener: AICapabilityListener): () => void {
+    this.capabilityListeners.add(listener);
+    listener(this.capabilities);
+    return () => this.capabilityListeners.delete(listener);
+  }
+
+  // -------------------------------------------------------------------------
+  // Preferences & listeners
+  // -------------------------------------------------------------------------
+
+  private restorePreferences() {
     if (typeof window === 'undefined') return;
     try {
-      const saved = localStorage.getItem('strudel_ai_engine') as AIEngineType;
-      if (saved) {
-        this.setEngine(saved, false);
-      } else {
-        this.setEngine('cloud-gemini', false);
+      const savedModel = localStorage.getItem(MODEL_STORAGE_KEY);
+      if (savedModel && getModelSpec(savedModel)) this.selectedModelId = savedModel;
+
+      const saved = localStorage.getItem(ENGINE_STORAGE_KEY) as AIEngineType | null;
+      if (saved && saved in AI_ENGINE_LABELS) {
+        // Restore the CHOICE without eagerly loading a model. The worker is
+        // created lazily on first use instead; previously the restore path
+        // skipped worker creation entirely and left the engine "active" with
+        // a null worker, so every request after a reload silently produced
+        // rule-based output forever.
+        this.activeEngine = saved;
+        this.currentProgress = this.idleProgressFor(saved);
       }
-    } catch (e) {
-      // Ignore
+    } catch {
+      /* storage unavailable — defaults are fine */
+    }
+  }
+
+  private idleProgressFor(engine: AIEngineType): AIEngineProgress {
+    switch (engine) {
+      case 'instant-heuristic':
+        return {
+          status: 'ready',
+          text: 'Built-in pattern rules ready — no download, works offline.',
+          progress: 1,
+        };
+      case 'webgpu-gemma': {
+        const spec = getModelSpec(this.selectedModelId);
+        return {
+          status: 'idle',
+          text: `${spec?.name ?? this.selectedModelId} will load on your first request.`,
+          progress: 0,
+        };
+      }
+      case 'chrome-builtin':
+        return { status: 'idle', text: 'Chrome built-in AI selected.', progress: 0 };
+      case 'cloud-gemini':
+        return hasApiKey()
+          ? { status: 'ready', text: 'Gemini ready, using your API key.', progress: 1 }
+          : {
+              status: 'idle',
+              text: 'Add your Gemini API key to use this engine.',
+              progress: 0,
+            };
     }
   }
 
@@ -111,406 +256,456 @@ class AIManager {
     this.progressListeners.forEach((fn) => fn(progress));
   }
 
-  private emitEngineChange(engine: AIEngineType) {
+  // -------------------------------------------------------------------------
+  // Engine & model selection
+  // -------------------------------------------------------------------------
+
+  /**
+   * Selects an engine. Deliberately does NOT start a download — choosing
+   * "local model" in a picker is not consent to transfer a gigabyte. Call
+   * `preloadModel()` from an explicit button for that.
+   */
+  async setEngine(engine: AIEngineType) {
+    if (engine === this.activeEngine) return;
+
+    // Release GPU memory when moving away from the local engine.
+    if (this.activeEngine === 'webgpu-gemma' && engine !== 'webgpu-gemma') {
+      this.releaseWorker();
+    }
+
     this.activeEngine = engine;
     try {
-      localStorage.setItem('strudel_ai_engine', engine);
-    } catch (e) {
-      // Ignore
+      localStorage.setItem(ENGINE_STORAGE_KEY, engine);
+    } catch {
+      /* storage unavailable */
     }
     this.engineChangeListeners.forEach((fn) => fn(engine));
+    this.emitProgress(this.idleProgressFor(engine));
+    await this.refreshCapabilities();
   }
 
-  private createChromeAiProgressCallback() {
-    return (text: string, loaded?: number, total?: number) => {
-      let progress = 1;
-      let status: any = 'generating';
-      if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
-        progress = loaded / total;
-        status = 'downloading';
-      }
-      this.emitProgress({ status, text, progress });
-    };
-  }
-
-  /**
-   * Set active engine and start initialization if required.
-   */
-  async setEngine(engine: AIEngineType, triggerInit: boolean = true) {
-    this.emitEngineChange(engine);
-
-    if (engine === 'webgpu-gemma' && triggerInit) {
-      await this.initWebGPUWorker(this.selectedModelId);
-    } else if (engine === 'instant-heuristic') {
-      this.emitProgress({
-        status: 'ready',
-        text: 'Instant Heuristic Engine Active (0 ms latency, 0 MB)',
-        progress: 1.0,
-      });
-    } else if (engine === 'chrome-builtin') {
-      const avail = await chromeBuiltInAi.isAvailable();
-      if (avail.available) {
-        this.emitProgress({
-          status: 'ready',
-          text: 'Chrome Built-in AI (Gemini Nano) Active',
-          progress: 1.0,
-        });
-      } else {
-        this.emitProgress({
-          status: 'unsupported',
-          text: avail.reason || 'Chrome Built-in AI not available.',
-          progress: 0,
-          errorMessage: avail.reason,
-        });
-      }
-    } else if (engine === 'cloud-gemini') {
-      this.emitProgress({
-        status: 'ready',
-        text: 'Cloud Gemini 2.5 Flash Connected',
-        progress: 1.0,
-      });
-    }
-  }
-
-  /**
-   * Initialize WebLLM Worker
-   */
-  async initWebGPUWorker(modelId: string = this.selectedModelId): Promise<boolean> {
+  async setModel(modelId: string) {
+    if (modelId === this.selectedModelId) return;
     this.selectedModelId = modelId;
-
-    if (!('gpu' in navigator)) {
-      this.emitProgress({
-        status: 'unsupported',
-        text: 'WebGPU is not supported in this browser. Please use Chrome 113+ or Edge.',
-        progress: 0,
-        errorMessage: 'WebGPU unsupported',
-      });
-      return false;
+    try {
+      localStorage.setItem(MODEL_STORAGE_KEY, modelId);
+    } catch {
+      /* storage unavailable */
     }
-
-    if (!this.worker) {
-      this.worker = new Worker(new URL('../workers/aiWorker.ts', import.meta.url), {
-        type: 'module',
-      });
-
-      this.worker.onmessage = (e: MessageEvent<AIWorkerResponse>) => {
-        const { id, type, progress, data, error } = e.data;
-
-        if (type === 'progress' && progress) {
-          this.emitProgress(progress);
-        }
-
-        if (this.pendingRequests.has(id)) {
-          const { resolve, reject } = this.pendingRequests.get(id)!;
-          if (type === 'result' || type === 'ready') {
-            this.pendingRequests.delete(id);
-            resolve(data);
-          } else if (type === 'error') {
-            this.pendingRequests.delete(id);
-            reject(new Error(error || 'Worker execution error'));
-          }
-        }
-      };
-
-      this.worker.onerror = (err) => {
-        this.emitProgress({
-          status: 'error',
-          text: 'AI Worker crash or initialization failure.',
-          progress: 0,
-          errorMessage: err.message,
-        });
-      };
-    }
-
-    return new Promise<boolean>((resolve) => {
-      const reqId = 'init-' + Date.now();
-      this.pendingRequests.set(reqId, {
-        resolve: () => {
-          this.emitProgress({
-            status: 'ready',
-            text: `WebGPU Model (${modelId}) ready in memory.`,
-            progress: 1.0,
-          });
-          resolve(true);
-        },
-        reject: (err) => {
-          this.emitProgress({
-            status: 'error',
-            text: err.message || 'Failed to load WebGPU model.',
-            progress: 0,
-            errorMessage: err.message,
-          });
-          resolve(false);
-        },
-      });
-
-      this.worker?.postMessage({
-        id: reqId,
-        type: 'init',
-        modelId,
-      } as AIWorkerRequest);
-    });
-  }
-
-  private sendWorkerRequest<T>(type: AIWorkerRequest['type'], payload?: any): Promise<T> {
-    if (!this.worker) {
-      throw new Error('WebGPU Worker is not initialized.');
-    }
-
-    return new Promise((resolve, reject) => {
-      const id = 'req-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-      this.pendingRequests.set(id, { resolve, reject });
-      this.worker?.postMessage({
-        id,
-        type,
-        modelId: this.selectedModelId,
-        payload,
-      } as AIWorkerRequest);
-    });
+    // Drop the loaded model so the next request loads the new one.
+    this.releaseWorker();
+    this.emitProgress(this.idleProgressFor(this.activeEngine));
   }
 
   /**
-   * 1. Generate Pattern
+   * Explicitly downloads and loads the selected local model.
+   *
+   * Asks for persistent storage first: Cache Storage is best-effort by
+   * default, and a gigabyte of weights is exactly what a browser evicts first
+   * under pressure — so "download once, works forever" is not true unless we
+   * ask. The outcome is reported rather than assumed.
    */
+  async preloadModel(): Promise<{ ok: boolean; persisted: boolean; error?: string }> {
+    let persisted = false;
+    try {
+      if (navigator.storage?.persist) persisted = await navigator.storage.persist();
+    } catch {
+      /* not supported everywhere */
+    }
+
+    try {
+      await this.sendWorkerRequest('init', undefined, LOAD_TIMEOUT_MS);
+      const spec = getModelSpec(this.selectedModelId);
+      this.emitProgress({
+        status: 'ready',
+        text: `${spec?.name ?? this.selectedModelId} is loaded and ready.`,
+        progress: 1,
+        warnings: persisted
+          ? []
+          : ['Your browser did not grant persistent storage, so it may delete these weights later.'],
+      });
+      return { ok: true, persisted };
+    } catch (err: any) {
+      const message = err?.message || 'The model failed to load.';
+      this.emitProgress({ status: 'error', text: message, progress: 0, errorMessage: message });
+      return { ok: false, persisted, error: message };
+    }
+  }
+
+  /** Aborts any in-flight generation or download, on whichever engine is running. */
+  cancel() {
+    this.cloudAbort?.abort();
+    this.cloudAbort = null;
+    chromeBuiltInAi.cancel();
+    this.releaseWorker();
+    this.emitProgress({ status: 'idle', text: 'Cancelled.', progress: 0 });
+  }
+
+  // -------------------------------------------------------------------------
+  // Worker plumbing
+  // -------------------------------------------------------------------------
+
+  private ensureWorker(): Worker {
+    if (this.worker) return this.worker;
+
+    const worker = new Worker(new URL('../workers/aiWorker.ts', import.meta.url), {
+      type: 'module',
+    });
+
+    worker.onmessage = (e: MessageEvent<AIWorkerResponse>) => {
+      const { id, type, progress, data, error, phase } = e.data;
+
+      if (progress) this.emitProgress(progress);
+
+      // Loading the model is a step toward the answer, not the answer. Without
+      // this guard the manager resolved the caller's promise with `undefined`
+      // the moment the model finished loading, reported a failure, and then
+      // discarded the model's real output when it arrived.
+      if (phase === 'init' && type !== 'error') return;
+
+      const entry = this.pending.get(id);
+      if (!entry) return;
+
+      if (type === 'result' || type === 'ready') {
+        clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.resolve(data);
+      } else if (type === 'error') {
+        clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(new Error(error || 'The local model failed.'));
+      }
+    };
+
+    // A worker crash must reject everything in flight, or those promises hang
+    // forever and the UI spins indefinitely.
+    worker.onerror = (err) => {
+      const message = err.message || 'The local model worker crashed.';
+      this.rejectAllPending(new Error(message));
+      this.emitProgress({ status: 'error', text: message, progress: 0, errorMessage: message });
+    };
+
+    this.worker = worker;
+    return worker;
+  }
+
+  private rejectAllPending(error: Error) {
+    this.pending.forEach((entry) => {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    });
+    this.pending.clear();
+  }
+
+  private releaseWorker() {
+    if (!this.worker) return;
+    try {
+      this.worker.postMessage({ id: 'unload-' + Date.now(), type: 'unload' } as AIWorkerRequest);
+      this.worker.terminate();
+    } catch {
+      /* already gone */
+    }
+    this.worker = null;
+    this.rejectAllPending(new Error('The local model was unloaded.'));
+  }
+
+  private sendWorkerRequest<T>(
+    type: AIWorkerRequest['type'],
+    payload?: any,
+    timeoutMs: number = INFERENCE_TIMEOUT_MS,
+  ): Promise<T> {
+    const worker = this.ensureWorker();
+    const id = `req-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('The local model did not respond in time.'));
+      }, timeoutMs);
+
+      this.pending.set(id, { resolve, reject, timer });
+      worker.postMessage({ id, type, modelId: this.selectedModelId, payload } as AIWorkerRequest);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // The honesty wrapper
+  // -------------------------------------------------------------------------
+
+  /**
+   * Runs `primary` on the selected engine and, if it fails, falls back to the
+   * rule-based generator — but names what actually ran, both in the returned
+   * value and on the progress channel.
+   *
+   * The rule-based generator is a legitimate offline engine. It simply must
+   * never wear another engine's name.
+   */
+  private async withFallback<T>(
+    label: string,
+    primary: () => Promise<T>,
+    fallback: () => T | Promise<T>,
+  ): Promise<AIEngineResult<T>> {
+    const requested = this.activeEngine;
+
+    if (requested === 'instant-heuristic') {
+      return { data: await fallback(), producedBy: 'instant-heuristic' };
+    }
+
+    this.emitProgress({ status: 'ready', text: `${label}…`, progress: 0.05 });
+
+    try {
+      const data = await primary();
+      this.emitProgress({
+        status: 'ready',
+        text: `${AI_ENGINE_LABELS[requested]} finished.`,
+        progress: 1,
+      });
+      return { data, producedBy: requested };
+    } catch (err: any) {
+      const reason = err?.message || 'Unknown error.';
+      if (import.meta.env?.DEV) {
+        console.warn(`[ai] ${requested} failed during "${label}":`, err);
+      }
+      this.emitProgress({
+        status: 'error',
+        text: `${AI_ENGINE_LABELS[requested]} failed — used the built-in pattern rules instead.`,
+        progress: 0,
+        errorMessage: reason,
+      });
+      return {
+        data: await fallback(),
+        producedBy: 'instant-heuristic',
+        requestedEngine: requested,
+        degraded: reason,
+      };
+    }
+  }
+
+  /** Shared guard for the cloud path so a missing key fails clearly. */
+  private requireApiKey(): string {
+    const key = getApiKey();
+    if (!key) {
+      throw new Error('No Gemini API key set. Add one in the AI engine settings.');
+    }
+    return key;
+  }
+
+  private newCloudSignal(): AbortSignal {
+    this.cloudAbort?.abort();
+    this.cloudAbort = new AbortController();
+    return this.cloudAbort.signal;
+  }
+
+  // -------------------------------------------------------------------------
+  // Tasks
+  // -------------------------------------------------------------------------
+
   async generateTrack(
     prompt: string,
     style: string,
     complexity: 'Beginner' | 'Intermediate' | 'Advanced',
-    tempo: number
-  ): Promise<AIGeneratedTrack> {
-    // Mode 1: Instant Heuristics
-    if (this.activeEngine === 'instant-heuristic') {
-      return generateHeuristicTrack(prompt, style, complexity, tempo);
-    }
-
-    // Mode 2: Chrome Built-in AI
-    if (this.activeEngine === 'chrome-builtin') {
-      try {
-        return await chromeBuiltInAi.generate(prompt, style, complexity, tempo, this.createChromeAiProgressCallback());
-      } catch (e) {
-        console.warn('Chrome Built-in AI failed, falling back to heuristic:', e);
-        return generateHeuristicTrack(prompt, style, complexity, tempo);
-      }
-    }
-
-    // Mode 3: WebGPU Gemma Worker
-    if (this.activeEngine === 'webgpu-gemma') {
-      try {
-        return await this.sendWorkerRequest<AIGeneratedTrack>('generate', {
-          prompt,
-          style,
-          complexity,
-          tempo,
-        });
-      } catch (e) {
-        console.warn('WebGPU Gemma failed, falling back to heuristic:', e);
-        return generateHeuristicTrack(prompt, style, complexity, tempo);
-      }
-    }
-
-    // Mode 4: Cloud Gemini Server API
-    try {
-      const res = await fetch('/api/generate-strudel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, style, complexity, tempo }),
-      });
-      const data = await res.json();
-      if (data.success && data.data) {
-        return data.data;
-      }
-      throw new Error(data.error || 'Server generation failed');
-    } catch (e) {
-      console.warn('Cloud API failed, falling back to heuristic:', e);
-      return generateHeuristicTrack(prompt, style, complexity, tempo);
-    }
+    tempo: number,
+  ): Promise<AIEngineResult<AIGeneratedTrack>> {
+    return this.withFallback<AIGeneratedTrack>(
+      'Composing',
+      async () => {
+        switch (this.activeEngine) {
+          case 'chrome-builtin':
+            return chromeBuiltInAi.generate(prompt, style, complexity, tempo);
+          case 'webgpu-gemma':
+            return this.sendWorkerRequest<AIGeneratedTrack>('generate', {
+              prompt,
+              style,
+              complexity,
+              tempo,
+            });
+          default: {
+            const raw = await callGemini({
+              apiKey: this.requireApiKey(),
+              systemInstruction: STRUDEL_SYSTEM_PROMPT,
+              userPrompt: buildGeneratePrompt(prompt, style, complexity, tempo),
+              schema: GENERATE_SCHEMA,
+              signal: this.newCloudSignal(),
+            });
+            return parseGeneratedTrack(raw, prompt, style, tempo);
+          }
+        }
+      },
+      () => generateHeuristicTrack(prompt, style, complexity, tempo),
+    );
   }
 
-  /**
-   * 2. Tweak Pattern
-   */
-  async tweakPattern(currentCode: string, instruction: string): Promise<AITweakResult> {
-    if (this.activeEngine === 'instant-heuristic') {
-      return tweakHeuristicCode(currentCode, instruction);
-    }
-
-    if (this.activeEngine === 'chrome-builtin') {
-      try {
-        return await chromeBuiltInAi.tweak(currentCode, instruction, this.createChromeAiProgressCallback());
-      } catch (e) {
-        return tweakHeuristicCode(currentCode, instruction);
-      }
-    }
-
-    if (this.activeEngine === 'webgpu-gemma') {
-      try {
-        return await this.sendWorkerRequest<AITweakResult>('tweak', {
-          currentCode,
-          instruction,
-        });
-      } catch (e) {
-        return tweakHeuristicCode(currentCode, instruction);
-      }
-    }
-
-    // Cloud Fallback
-    try {
-      const res = await fetch('/api/tweak-pattern', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentCode, instruction }),
-      });
-      const data = await res.json();
-      if (data.success && data.data) return data.data;
-      throw new Error(data.error);
-    } catch (e) {
-      return tweakHeuristicCode(currentCode, instruction);
-    }
+  async tweakPattern(
+    currentCode: string,
+    instruction: string,
+  ): Promise<AIEngineResult<AITweakResult>> {
+    return this.withFallback<AITweakResult>(
+      'Applying your change',
+      async () => {
+        switch (this.activeEngine) {
+          case 'chrome-builtin':
+            return chromeBuiltInAi.tweak(currentCode, instruction);
+          case 'webgpu-gemma':
+            return this.sendWorkerRequest<AITweakResult>('tweak', { currentCode, instruction });
+          default: {
+            const raw = await callGemini({
+              apiKey: this.requireApiKey(),
+              systemInstruction: STRUDEL_SYSTEM_PROMPT,
+              userPrompt: buildTweakPrompt(currentCode, instruction),
+              schema: TWEAK_SCHEMA,
+              signal: this.newCloudSignal(),
+            });
+            return parseTweakResult(raw);
+          }
+        }
+      },
+      () => tweakHeuristicCode(currentCode, instruction),
+    );
   }
 
-  /**
-   * 3. Line-By-Line Breakdown & Music Theory
-   */
-  async explainCode(code: string): Promise<AIExplanationResult> {
-    if (this.activeEngine === 'instant-heuristic') {
-      return {
-        summary: 'Algorithmic Strudel composition utilizing multi-voice mini-notation patterns.',
-        lineByLine: [
-          { line: 'stack(...)', role: 'Structure', explanation: 'Combines multiple voices and instruments concurrently in synchronization' },
-          { line: 's("bd*4")', role: 'Drums', explanation: 'Solid 4-on-the-floor kick drum rhythm anchoring the groove' },
-          { line: 'note("<...>")', role: 'Bass', explanation: 'Melodic sequence stepping through harmony across cycles' },
-        ],
-        miniNotationGuide: [
-          { symbol: '*', title: 'Subdivision Speed', explanation: 'Repeats event N times per cycle', example: 'bd*4' },
-          { symbol: '~', title: 'Musical Rest', explanation: 'Silent pause', example: '~ cp ~ cp' },
-        ],
-        musicTheoryTip: 'Adjusting filter cutoff (.lpf) and stereo room reverb creates harmonic depth and spaciousness.',
-      };
-    }
-
-    if (this.activeEngine === 'chrome-builtin') {
-      try {
-        return await chromeBuiltInAi.explain(code, this.createChromeAiProgressCallback());
-      } catch (e) {
-        return this.explainCodeFallback(code);
-      }
-    }
-
-    if (this.activeEngine === 'webgpu-gemma') {
-      try {
-        return await this.sendWorkerRequest<AIExplanationResult>('explain', { code });
-      } catch (e) {
-        return this.explainCodeFallback(code);
-      }
-    }
-
-    try {
-      const res = await fetch('/api/explain-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      });
-      const data = await res.json();
-      if (data.success && data.data) return data.data;
-      throw new Error(data.error);
-    } catch (e) {
-      return this.explainCodeFallback(code);
-    }
+  async explainCode(code: string): Promise<AIEngineResult<AIExplanationResult>> {
+    return this.withFallback<AIExplanationResult>(
+      'Analysing the pattern',
+      async () => {
+        switch (this.activeEngine) {
+          case 'chrome-builtin':
+            return chromeBuiltInAi.explain(code);
+          case 'webgpu-gemma':
+            return this.sendWorkerRequest<AIExplanationResult>('explain', { code });
+          default: {
+            const raw = await callGemini({
+              apiKey: this.requireApiKey(),
+              systemInstruction: STRUDEL_SYSTEM_PROMPT,
+              userPrompt: buildExplainPrompt(code),
+              schema: EXPLAIN_SCHEMA,
+              signal: this.newCloudSignal(),
+            });
+            return parseExplanationResult(raw);
+          }
+        }
+      },
+      () => this.heuristicExplanation(),
+    );
   }
 
-  private explainCodeFallback(code: string): AIExplanationResult {
+  private heuristicExplanation(): AIExplanationResult {
     return {
-      summary: 'Strudel algorithmic live-coding structure.',
+      summary: 'A layered Strudel pattern combining rhythm, bass and harmony.',
       lineByLine: [
-        { line: 'stack(...)', role: 'Structure', explanation: 'Runs nested layers together' },
+        {
+          line: 'stack(...)',
+          role: 'Structure',
+          explanation: 'Plays every layer inside it at the same time.',
+        },
       ],
       miniNotationGuide: [
-        { symbol: '*', title: 'Subdivision', explanation: 'Repeat step', example: 'bd*4' },
+        { symbol: '*', title: 'Subdivision', explanation: 'Repeats N times per cycle', example: 'bd*4' },
+        { symbol: '~', title: 'Rest', explanation: 'A silent step', example: '~ cp ~ cp' },
       ],
-      musicTheoryTip: 'Combine rhythmic syncopation with lowpass filter modulation for maximum dynamic range.',
+      musicTheoryTip:
+        'Try moving the filter cutoff with .lpf() across a section — it is the quickest way to build tension.',
     };
   }
 
   /**
-   * 4. Suggest DJ Variations
+   * Generates variations ONE AT A TIME.
+   *
+   * Asking for three complete patterns in a single reply needs roughly 2,100
+   * output tokens, which overran every local model's budget and truncated
+   * mid-pattern on every attempt. Sequential calls also mean a later failure
+   * still leaves the earlier variations usable.
    */
-  async suggestVariations(currentCode: string, mood: string): Promise<{ variations: AIVariation[] }> {
-    if (this.activeEngine === 'instant-heuristic') {
-      return suggestHeuristicVariations(currentCode, mood);
-    }
+  async suggestVariations(
+    currentCode: string,
+    mood: string,
+  ): Promise<AIEngineResult<{ variations: AIVariation[] }>> {
+    return this.withFallback<{ variations: AIVariation[] }>(
+      'Creating variations',
+      async () => {
+        const variations: AIVariation[] = [];
+        let lastError: unknown = null;
 
-    if (this.activeEngine === 'chrome-builtin') {
-      try {
-        return await chromeBuiltInAi.suggestVariations(currentCode, mood, this.createChromeAiProgressCallback());
-      } catch (e) {
-        return suggestHeuristicVariations(currentCode, mood);
-      }
-    }
+        for (const recipe of VARIATION_RECIPES) {
+          try {
+            let variation: AIVariation;
+            switch (this.activeEngine) {
+              case 'chrome-builtin':
+                variation = await chromeBuiltInAi.variation(currentCode, mood, recipe);
+                break;
+              case 'webgpu-gemma':
+                variation = await this.sendWorkerRequest<AIVariation>('suggest_variations', {
+                  currentCode,
+                  mood,
+                  recipe,
+                });
+                break;
+              default: {
+                const raw = await callGemini({
+                  apiKey: this.requireApiKey(),
+                  systemInstruction: STRUDEL_SYSTEM_PROMPT,
+                  userPrompt: buildVariationPrompt(currentCode, mood, recipe.type, recipe.description),
+                  schema: VARIATION_SCHEMA,
+                  signal: this.newCloudSignal(),
+                });
+                variation = parseVariationResult(raw, recipe);
+              }
+            }
+            variations.push(variation);
+            this.emitProgress({
+              status: 'ready',
+              text: `Created ${variations.length} of ${VARIATION_RECIPES.length} variations…`,
+              progress: variations.length / VARIATION_RECIPES.length,
+            });
+          } catch (err) {
+            lastError = err;
+          }
+        }
 
-    if (this.activeEngine === 'webgpu-gemma') {
-      try {
-        return await this.sendWorkerRequest<{ variations: AIVariation[] }>('suggest_variations', {
-          currentCode,
-          mood,
-        });
-      } catch (e) {
-        return suggestHeuristicVariations(currentCode, mood);
-      }
-    }
-
-    try {
-      const res = await fetch('/api/suggest-variations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentCode, mood }),
-      });
-      const data = await res.json();
-      if (data.success && data.data) return data.data;
-      throw new Error(data.error);
-    } catch (e) {
-      return suggestHeuristicVariations(currentCode, mood);
-    }
+        if (variations.length === 0) {
+          throw lastError instanceof Error
+            ? lastError
+            : new Error('No variation could be generated.');
+        }
+        return { variations };
+      },
+      () => suggestHeuristicVariations(currentCode, mood),
+    );
   }
 
-  /**
-   * 5. Fix Broken Code
-   */
-  async fixCode(code: string, errorMessage: string): Promise<{ fixedCode: string; fixExplanation: string; reason: string }> {
-    if (this.activeEngine === 'instant-heuristic') {
-      return fixHeuristicCode(code, errorMessage);
-    }
-
-    if (this.activeEngine === 'chrome-builtin') {
-      try {
-        return await chromeBuiltInAi.fix(code, errorMessage, this.createChromeAiProgressCallback());
-      } catch (e) {
-        return fixHeuristicCode(code, errorMessage);
-      }
-    }
-
-    if (this.activeEngine === 'webgpu-gemma') {
-      try {
-        return await this.sendWorkerRequest<{ fixedCode: string; fixExplanation: string; reason: string }>('fix', {
-          code,
-          errorMessage,
-        });
-      } catch (e) {
-        return fixHeuristicCode(code, errorMessage);
-      }
-    }
-
-    try {
-      const res = await fetch('/api/fix-errors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, errorMessage }),
-      });
-      const data = await res.json();
-      if (data.success && data.data) return data.data;
-      throw new Error(data.error);
-    } catch (e) {
-      return fixHeuristicCode(code, errorMessage);
-    }
+  async fixCode(
+    code: string,
+    errorMessage: string,
+  ): Promise<AIEngineResult<{ fixedCode: string; fixExplanation: string; reason: string }>> {
+    return this.withFallback(
+      'Fixing the pattern',
+      async () => {
+        let tweak: AITweakResult;
+        switch (this.activeEngine) {
+          case 'chrome-builtin':
+            tweak = await chromeBuiltInAi.fix(code, errorMessage);
+            break;
+          case 'webgpu-gemma':
+            tweak = await this.sendWorkerRequest<AITweakResult>('fix', { code, errorMessage });
+            break;
+          default: {
+            const raw = await callGemini({
+              apiKey: this.requireApiKey(),
+              systemInstruction: STRUDEL_SYSTEM_PROMPT,
+              userPrompt: buildFixPrompt(code, errorMessage),
+              schema: TWEAK_SCHEMA,
+              signal: this.newCloudSignal(),
+            });
+            tweak = parseTweakResult(raw);
+          }
+        }
+        return {
+          fixedCode: tweak.code,
+          fixExplanation: tweak.summary,
+          reason: errorMessage,
+        };
+      },
+      () => fixHeuristicCode(code, errorMessage),
+    );
   }
 }
 

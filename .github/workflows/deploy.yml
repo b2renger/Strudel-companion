@@ -1,0 +1,73 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you redeploy by hand from the Actions tab.
+  workflow_dispatch:
+
+# Required by actions/deploy-pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead, and don't kill one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` installs exactly what package-lock.json pins, and fails if the
+      # lockfile and package.json have drifted.
+      - name: Install dependencies
+        run: npm ci
+
+      # Both gates run before publishing, so a type error or a failing test
+      # never reaches the live site.
+      - name: Type check
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # Derives the base path from the repository name, so a fork or a
+        # rename needs no code change. github.repository is "owner/name".
+        run: PAGES_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # GitHub Pages serves the 404 page for unknown paths. Giving it the SPA
+      # shell means a deep link or a refresh loads the app instead of a 404.
+      - name: Add SPA fallback
+        run: cp dist/index.html dist/404.html
+
+      # Stops Pages running the output through Jekyll, which would drop any
+      # file or directory whose name begins with an underscore.
+      - name: Disable Jekyll
+        run: touch dist/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

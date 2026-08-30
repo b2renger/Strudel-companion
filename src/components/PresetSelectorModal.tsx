@@ -20,7 +20,7 @@ export const PresetSelectorModal: React.FC<PresetSelectorModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 font-mono select-none">
-      <div className="bg-[var(--app-card-1)] border border-gray-200 rounded w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-[var(--app-card-1)] border border-gray-200 rounded w-full max-w-4xl max-h-[85dvh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-[var(--app-card-1)]">
           <div className="flex items-center gap-2">
@@ -63,7 +63,7 @@ export const PresetSelectorModal: React.FC<PresetSelectorModalProps> = ({
                     <div className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
                       <span>{preset.title}</span>
                       {isSelected && (
-                        <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-orange-500/20 text-orange-600 font-bold">
+                        <span className="text-[9px] uppercase px-1 py-0.5 rounded bg-orange-500/20 text-orange-600 font-bold">
                           Active
                         </span>
                       )}
@@ -74,11 +74,11 @@ export const PresetSelectorModal: React.FC<PresetSelectorModalProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5 text-[10px]">
-                    <span className="px-1.5 py-0.2 rounded bg-black/5 text-gray-700 font-bold uppercase">
+                    <span className="px-1.5 py-0.5 rounded bg-black/5 text-gray-700 font-bold uppercase">
                       {preset.genre}
                     </span>
                     <span
-                      className={`px-1.5 py-0.2 rounded font-bold uppercase ${
+                      className={`px-1.5 py-0.5 rounded font-bold uppercase ${
                         preset.complexity === 'Beginner'
                           ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30'
                           : preset.complexity === 'Intermediate'
@@ -106,7 +106,7 @@ export const PresetSelectorModal: React.FC<PresetSelectorModalProps> = ({
                     {preset.tags.map((tag, t) => (
                       <span
                         key={t}
-                        className="text-[9px] px-1 py-0.2 rounded bg-black/5 text-gray-500 border border-gray-100"
+                        className="text-[9px] px-1 py-0.5 rounded bg-black/5 text-gray-500 border border-gray-100"
                       >
                         #{tag}
                       </span>
@@ -136,7 +136,7 @@ export const PresetSelectorModal: React.FC<PresetSelectorModalProps> = ({
 
         {/* Footer */}
         <div className="px-4 py-2.5 border-t border-gray-200 bg-[var(--app-card-1)] flex items-center justify-between text-[10px] text-gray-500">
-          <span>Prompt Gemini AI anytime in the bottom prompt bar to generate custom patterns.</span>
+          <span>Use the prompt bar at the top to describe a pattern and have the AI write it.</span>
           <button
             onClick={onClose}
             className="px-3 py-1 rounded bg-black/5 hover:bg-black/10 text-gray-700 font-bold uppercase transition-colors"

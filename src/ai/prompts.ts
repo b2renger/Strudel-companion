@@ -1,38 +1,93 @@
 /**
- * System prompts and prompt templates for client-side Strudel live-coding synthesis.
- * Optimized for Gemma 2B / Gemini Nano / Local WebGPU models with concise context.
+ * System prompts and prompt templates for client-side Strudel synthesis.
+ * Sized for small local models (0.5B–2B) as well as Gemini.
+ *
+ * Two rules govern this file:
+ *
+ * 1. The sound vocabulary is NOT written here. It is generated from
+ *    `src/audio/vocabulary.ts`, which the audio engine also reads. Hardcoding
+ *    a palette here is what previously coached models to emit `glitch`,
+ *    `supersaw` and `marimba` — names the engine renders as a wrong pitched
+ *    tone or a plain sawtooth.
+ *
+ * 2. Output contracts are FENCED CODE + LABELLED LINES, not nested JSON.
+ *    Asking a 1B model for JSON with escaped newlines inside string values is
+ *    close to the worst case for structured output; when such a reply is
+ *    truncated, `jsonrepair` silently closes the string and hands back a
+ *    half-written pattern that looks valid. A fence is ~35% cheaper in output
+ *    tokens and, crucially, a truncated reply is *detectable* (no closing
+ *    fence) rather than silently repaired. Engines with real constrained
+ *    decoding (Gemini's `responseSchema`) use their own schema instead.
  */
 
-export const STRUDEL_SYSTEM_PROMPT = `You are Strudel AI, an expert TidalCycles live-coding synthesizer engine.
-You write valid runnable JavaScript Strudel patterns using mini-notation across diverse musical genres, scales, and rhythms.
+import { buildVocabularyPromptSection } from '../audio/vocabulary';
 
-CREATIVE VARIETY DIRECTIVES:
-- Explore diverse musical modes (Dorian, Phrygian, Lydian, Mixolydian, Aeolian, Japanese Hirajoshi, Harmonic Minor, Whole-Tone) across different root pitches (C, D, Eb, F, G, Ab, A, Bb).
-- Explore varied rhythmic grooves (Euclidean (5,8)/(7,16), 2-step garage skips, Amapiano log-drums, Jungle Amen breaks, trap tuplets, Bossa Nova claves, half-time dub, ambient drones).
-- Avoid repetitive generic 4-on-the-floor clichés unless requested.
-- Use a rich palette of instruments: piano, rhodes, sawtooth, square, sine, triangle, supersaw, marimba, vibraphone, pluck, organ, bass, along with drum samples: bd, sd, cp, rim, hh, oh, cb, tom, perc, glitch, cr, shaker.
+/**
+ * Skill-level calibration. Ported from the Express server's prompt, which was
+ * the only place in the codebase that defined what these words mean — the
+ * client previously passed the bare word "Intermediate" with no definition.
+ */
+const COMPLEXITY_GUIDE: Record<string, string> = {
+  Beginner: 'simple 2-3 layers, clear 4/4 meter, no probability or polymeter',
+  Intermediate: '3-4 layers, Euclidean rhythms and filter modulation',
+  Advanced: "4-6 layers, Euclidean cross-rhythms, probability '?' and deep polymeter",
+};
 
-CRITICAL STRUDEL SYNTAX RULES:
-1. Wrap multiple layers in stack():
-   stack(
-     s("bd*4"),
-     s("~ cp ~ cp"),
-     s("hh*8").gain(0.7),
-     note("<c2 f2 g2 bb1>").s("sawtooth").lpf(1200)
-   )
-2. NEVER use invalid sample names. Use standard Tidal/Strudel samples:
-   - Drums: bd (kick), sd (snare), cp (clap), hh (hihat closed), oh (open hat), rim, perc, cb (cowbell), cr (crash), shaker, tom, glitch
-   - Synths: sawtooth, square, sine, triangle, supersaw, piano, rhodes, bass, pluck, marimba, vibraphone, organ
-3. Mini-notation operators:
-   - "bd*4" (repeat 4 times per cycle)
-   - "bd(3,8)" (Euclidean rhythm: 3 pulses in 8 steps)
-   - "<a2 c3 e3 g3>" (alternate step per cycle)
-   - "[bd sd] [hh hh]" (subdivide step)
-   - "~" (rest)
-   - "cp?" (probability 50%)
-   - "c1@2" (time elongation)
-   - ".lpf(2000)", ".hpf(400)", ".gain(0.8)", ".room(0.5)", ".delay(0.4)", ".decay(0.3)"
-4. Always produce valid runnable code.`;
+function complexityLine(complexity: string): string {
+  const guide = COMPLEXITY_GUIDE[complexity] || COMPLEXITY_GUIDE.Intermediate;
+  return `${complexity || 'Intermediate'} (${guide})`;
+}
+
+export const STRUDEL_SYSTEM_PROMPT = `You are Strudel AI, an expert TidalCycles live-coding assistant.
+You write short, valid, runnable Strudel patterns using mini-notation.
+
+${buildVocabularyPromptSection()}
+
+MINI-NOTATION:
+- "bd*4"      repeat 4 times per cycle
+- "bd(3,8)"   Euclidean: 3 pulses across 8 steps
+- "<a b c>"   step to the next value each cycle
+- "[bd sd] hh" subdivide one step
+- "bd, hh*8"  play both at once
+- "~"         rest
+- "cp?"       50% chance
+- "a@2 b"     hold twice as long
+
+EFFECTS: .gain(0.7) .lpf(1200) .hpf(200) .room(0.5) .delay(0.25) .decay(0.4) .pan(0.3)
+
+STRUCTURE: wrap concurrent layers in stack(...):
+stack(
+  s("bd*4"),
+  s("~ cp ~ cp"),
+  s("hh*8").gain(0.6),
+  note("<c2 f2 g2 bb1>").s("sawtooth").lpf(1200)
+)
+
+MUSICAL VARIETY: vary the mode (Dorian, Phrygian, Lydian, Mixolydian, Aeolian,
+Hirajoshi, harmonic minor) and the root. Vary the groove (Euclidean (5,8)/(7,16),
+2-step garage skips, half-time dub, jungle breaks, bossa clave, ambient drones).
+Avoid a generic 4-on-the-floor unless it is asked for.
+
+RULES:
+- Numeric effect arguments only. Write .pan(0.3), never .pan("0 1") — a quoted
+  argument is parsed as a note pattern and will silence the layer.
+- Never nest a function call inside an effect argument.
+- Output only what the response format asks for. No preamble, no commentary.`;
+
+/** Shared instruction for the fenced-code contract. */
+const CODE_BLOCK_CONTRACT = `Reply in EXACTLY this format and nothing else:
+
+\`\`\`strudel
+stack(
+  ...your pattern...
+)
+\`\`\`
+TITLE: a short creative title
+BPM: a number
+GENRE: one or two words
+WHY: one or two sentences on the groove and harmony
+NOTE: symbol or method — what it does
+NOTE: symbol or method — what it does`;
 
 export function buildGeneratePrompt(
   prompt: string,
@@ -42,123 +97,126 @@ export function buildGeneratePrompt(
 ): string {
   return `${STRUDEL_SYSTEM_PROMPT}
 
-TASK: Generate an algorithmic live-coding track in Strudel.
+TASK: compose a Strudel pattern.
 - Description: "${prompt}"
-- Style/Genre: "${style || 'Electronic'}"
-- Complexity: "${complexity || 'Intermediate'}"
-- Suggested BPM: ${tempo || 120}
+- Style: "${style || 'Electronic'}"
+- Skill level: ${complexityLine(complexity)}
+- BPM: ${tempo || 120}
 
-Respond in STRICT JSON format:
-{
-  "title": "Track Title",
-  "bpm": ${tempo || 120},
-  "genre": "${style || 'Electronic'}",
-  "code": "// Clean runnable Strudel code\\nstack(\\n  s(\\"bd*4\\"),\\n  ...\\n)",
-  "explanation": "Brief explanation of rhythmic and harmonic structure",
-  "notationBreakdown": [
-    {"symbolOrMethod": "bd*4", "meaning": "4-on-the-floor kick"},
-    {"symbolOrMethod": "note(\\"<c2 eb2>\\")", "meaning": "Alternating bass root per cycle"}
-  ],
-  "liveTweaks": [
-    {"label": "Filter Sweep", "code": "stack(...)"}
-  ]
-}`;
+The structure MUST genuinely reflect the ${complexity || 'Intermediate'} skill level.
+Add a short inline "// TWEAK TIP:" comment on each layer telling the user which
+number or symbol to change by hand and what it will do.
+
+${CODE_BLOCK_CONTRACT}`;
 }
 
 export function buildTweakPrompt(currentCode: string, instruction: string): string {
   return `${STRUDEL_SYSTEM_PROMPT}
 
-CURRENT STRUDEL PATTERN:
-\`\`\`javascript
+CURRENT PATTERN:
+\`\`\`strudel
 ${currentCode}
 \`\`\`
 
-USER TWEAK INSTRUCTION: "${instruction}"
+INSTRUCTION: "${instruction}"
 
-Modify the current Strudel code according to the instruction while maintaining musicality.
-Respond in STRICT JSON format:
-{
-  "code": "// Full updated runnable Strudel code\\nstack(...)",
-  "summary": "Brief explanation of what changed",
-  "diffHighlights": [
-    "Changed filter cutoff to 2400Hz",
-    "Added Euclidean syncopation (5,8) to hats"
-  ]
-}`;
+Apply the instruction while keeping the pattern musical. Return the COMPLETE
+updated pattern, not a fragment or a diff.
+
+Reply in EXACTLY this format and nothing else:
+
+\`\`\`strudel
+stack(
+  ...the full updated pattern...
+)
+\`\`\`
+SUMMARY: one sentence on what changed
+CHANGED: one specific edit
+CHANGED: another specific edit`;
 }
 
 export function buildExplainPrompt(code: string): string {
   return `${STRUDEL_SYSTEM_PROMPT}
 
-ANALYZE THIS STRUDEL CODE:
-\`\`\`javascript
+ANALYSE THIS PATTERN:
+\`\`\`strudel
 ${code}
 \`\`\`
 
-Provide a line-by-line musical and technical breakdown.
-Respond in STRICT JSON format:
-{
-  "summary": "Overall summary of groove, harmony, and rhythm",
-  "lineByLine": [
-    {"line": "s(\\"bd*4\\")", "role": "Drums", "explanation": "4-on-the-floor kick drum"},
-    {"line": "note(...)", "role": "Bass", "explanation": "Deep bassline"}
-  ],
-  "miniNotationGuide": [
-    {"symbol": "*4", "title": "Subdivision", "explanation": "Repeats 4 times per cycle", "example": "bd*4"}
-  ],
-  "musicTheoryTip": "Key theory tip regarding scale, modes, or rhythm"
-}`;
+Reply in EXACTLY this format and nothing else:
+
+SUMMARY: two sentences on the groove, harmony and rhythm
+LINE: s("bd*4") | Drums | four-on-the-floor kick anchoring the groove
+LINE: note(...) | Bass | what this layer does
+SYMBOL: * | Subdivision | repeats N times per cycle | bd*4
+SYMBOL: ~ | Rest | a silent step | ~ cp ~ cp
+TIP: one music-theory tip for developing this pattern
+
+Use one LINE row per layer in the pattern, and at most three SYMBOL rows.`;
 }
 
-export function buildVariationsPrompt(currentCode: string, mood: string): string {
+/**
+ * One variation per call.
+ *
+ * Three complete patterns in a single reply needs roughly 2,100 output tokens,
+ * which overruns the local models' budget every time and truncates mid-pattern.
+ * The manager issues these sequentially instead.
+ */
+export function buildVariationPrompt(
+  currentCode: string,
+  mood: string,
+  variationType: string,
+  description: string
+): string {
   return `${STRUDEL_SYSTEM_PROMPT}
 
-CURRENT STRUDEL PATTERN:
-\`\`\`javascript
+CURRENT PATTERN:
+\`\`\`strudel
 ${currentCode}
 \`\`\`
 
-TASK: Create 3 performance variations (e.g. Drop / Breakdown / Polyrhythm / Glitch) with mood: "${mood}".
-Respond in STRICT JSON format:
-{
-  "variations": [
-    {
-      "title": "The Drop (Peak Energy)",
-      "type": "drop",
-      "description": "Full kick and open filter",
-      "code": "stack(...)"
-    },
-    {
-      "title": "Ambient Breakdown",
-      "type": "breakdown",
-      "description": "Filtered chords with delay",
-      "code": "stack(...)"
-    },
-    {
-      "title": "Euclidean Poly-Shift",
-      "type": "polyrhythm",
-      "description": "Syncopated rhythms",
-      "code": "stack(...)"
-    }
-  ]
-}`;
+TASK: create ONE performance variation of this pattern.
+- Variation type: ${variationType}
+- It should feel like: ${description}
+- Overall mood: ${mood || 'energetic'}
+
+Reply in EXACTLY this format and nothing else:
+
+\`\`\`strudel
+stack(
+  ...the full variation...
+)
+\`\`\`
+TITLE: a short performance name
+SUMMARY: one sentence on how it differs from the original`;
 }
+
+/** The variations the copilot offers, used to drive sequential calls. */
+export const VARIATION_RECIPES = [
+  { type: 'drop', title: 'The Drop', description: 'peak energy — full kick, open filter, maximum drive' },
+  { type: 'breakdown', title: 'The Breakdown', description: 'drums stripped back, atmospheric pads, long reverb' },
+  { type: 'polyrhythm', title: 'Euclidean Shift', description: 'syncopated Euclidean cross-rhythms against the pulse' },
+] as const;
 
 export function buildFixPrompt(code: string, errorMessage: string): string {
   return `${STRUDEL_SYSTEM_PROMPT}
 
-BROKEN CODE:
-\`\`\`javascript
+THIS PATTERN FAILS TO PARSE:
+\`\`\`strudel
 ${code}
 \`\`\`
 
-ERROR MESSAGE: "${errorMessage}"
+ERROR: "${errorMessage}"
 
-Fix the Strudel code syntax so it evaluates cleanly without errors.
-Respond in STRICT JSON format:
-{
-  "fixedCode": "// Fixed runnable Strudel code\\nstack(...)",
-  "fixExplanation": "What syntax error was fixed",
-  "reason": "Why the error occurred"
-}`;
+Fix the syntax. Change as little as possible — keep the musical intent intact.
+
+Reply in EXACTLY this format and nothing else:
+
+\`\`\`strudel
+stack(
+  ...the corrected pattern...
+)
+\`\`\`
+SUMMARY: one sentence naming the syntax error you fixed
+CHANGED: the specific correction you made`;
 }

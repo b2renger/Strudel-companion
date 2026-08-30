@@ -40,7 +40,7 @@ export const NotationGuide: React.FC<NotationGuideProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 font-mono select-none">
-      <div className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-3xl max-h-[85dvh] flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
         <div className="px-5 py-3.5 border-b border-gray-200 flex items-center justify-between bg-gray-50">
           <div className="flex items-center gap-2.5">
@@ -123,7 +123,7 @@ export const NotationGuide: React.FC<NotationGuideProps> = ({
                       ? 'bg-emerald-500 text-white shadow-[0_0_10px_rgba(5,150,105,0.4)]'
                       : 'bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-200 hover:border-emerald-500/40'
                   }`}
-                  title="Audition rhythm"
+                  title="Audition rhythm" aria-label="Audition rhythm"
                 >
                   <Volume2 className="w-3 h-3" />
                   <span>{playingExample === item.symbol ? 'Playing' : 'Audition'}</span>

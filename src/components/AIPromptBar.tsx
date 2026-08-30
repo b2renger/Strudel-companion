@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { statusText } from '../ai/progressText';
 import { Sparkles, Wand2, Compass, Loader2, ArrowRight, Lightbulb, X, Tag } from 'lucide-react';
 import { INSPIRATION_PROMPTS } from '../data/presets';
 import { PromptSuggestionEngine, QUICK_ADD_MODIFIERS } from './PromptSuggestionEngine';
@@ -81,7 +82,7 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
               Natural Language Algorithmic Generator
             </div>
             <p className="text-[10px] text-gray-600">
-              Prompt Gemini in plain English to compose Strudel mini-notation patterns
+              Describe the music you want, in plain English
             </p>
           </div>
         </div>
@@ -201,7 +202,7 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
               <span>
                 {aiProgress && aiProgress.status === 'downloading' 
                   ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%` 
-                  : aiProgress?.text || 'Synthesizing Code...'}
+                  : statusText(aiProgress, 'Composing…')}
               </span>
             </>
           ) : (

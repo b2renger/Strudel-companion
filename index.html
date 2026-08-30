@@ -2,16 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Strudel AI Live Studio - Algorithmic Music & Live Coding</title>
-    <meta name="description" content="Algorithmic music live coding studio using Strudel notation with AI prompting to generate, explain, and tweak music patterns in real time." />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta name="description" content="Algorithmic music live coding studio using Strudel notation with AI prompting to generate, explain, and tweak music patterns in real time. Runs entirely in your browser." />
+    <meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+
+    <!--
+      No web-font <link> here on purpose.
+
+      The page previously render-blocked on fonts.googleapis.com, which stalls
+      first paint with no network and flatly contradicts "works offline". The
+      font stacks in index.css already fall back to ui-monospace / SFMono /
+      Menlo / Consolas, which is exactly right for a code-first tool. If you
+      want JetBrains Mono specifically, self-host the woff2 next to the bundle
+      rather than reintroducing a third-party request.
+    -->
   </head>
-  <body class="font-sans antialiased overflow-x-hidden">
+  <body class="antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

@@ -46,7 +46,7 @@ stack(
   s("~ [cp,sd] ~ [cp,sd]").gain(0.85),
   s("hh(7,16)").gain(0.6),
   note("f1 [f1 ab1] c2 [eb2 f2]").s("sawtooth").lpf(2200).decay(0.18).gain(0.9),
-  note("<[f3 ab3 c4] [db3 f3 ab3] [eb3 g3 bb3]>").s("supersaw").lpf(3400).decay(0.4).gain(0.6).room(0.4)
+  note("<[f3 ab3 c4] [db3 f3 ab3] [eb3 g3 bb3]>").s("sawtooth").lpf(3400).decay(0.4).gain(0.6).room(0.4)
 )`,
       },
     ],
@@ -58,11 +58,11 @@ stack(
     patterns: [
       {
         title: 'Soweto Log-Drum Suite',
-        description: 'Deep percussive log drum bassline with syncopated cabasa and lush gospel piano chord inversions.',
+        description: 'Deep percussive log drum bassline with syncopated shaker and lush gospel piano chord inversions.',
         theory: 'F Minor with syncopated 16th log-drum pitch bends and gospel 9th harmonies.',
         code: `// Amapiano - Soweto Log-Drum Suite (113 BPM)
 stack(
-  s("bd*4, cabasa(5,8)").gain(0.75),
+  s("bd*4, shaker(5,8)").gain(0.75),
   s("[~ rim] [rim ~] [~ cp*3] [rim ~]").gain(0.8),
   note("<[f1 f1] [~ f1] [ab1 ab1] [bb1 c2]>").s("triangle").decay(0.28).lpf(850).gain(0.95),
   note("<[f3 ab3 c4 eb4] [db3 f3 ab3 c4] [eb3 g3 bb3 db4] [c3 eb3 g3 bb3]>").s("piano").decay(0.9).delay(0.3).room(0.5).gain(0.65),
@@ -270,26 +270,55 @@ stack(
 /**
  * Generate a complete Strudel track based on natural language prompt.
  */
+/**
+ * Maps a wide genre vocabulary onto the twelve templates below.
+ *
+ * Salvaged from the Express server's local generator, which recognised about
+ * seventy-five keywords while this client-side version recognised four
+ * families — leaving eight of its own twelve templates unreachable from a
+ * prompt. Since this engine is the default and the universal fallback, its
+ * keyword coverage is what most users will actually experience.
+ *
+ * Longest keys are tested first so "dub techno" wins over "techno".
+ */
+const GENRE_KEYWORDS: Record<string, string[]> = {
+  lofi: ['lo-fi', 'lofi', 'neo-soul', 'chill', 'coffee', 'study', 'jazz', 'rhodes', 'soul', 'r&b', 'dream', 'shoegaze', 'indie', 'bells', 'shimmer', 'sleep'],
+  acid: ['dub techno', 'industrial', 'hypnotic', 'dubstep', 'squelch', 'techno', 'detroit', 'berlin', 'minimal', 'wobble', 'acid', 'rave', '303'],
+  ambient: ['meditation', 'ethereal', 'ambient', 'drone', 'space', 'calm', 'zen'],
+  ukgarage: ['speed garage', '2-step', 'garage', '2step', 'ghetto', 'swing', 'ukg'],
+  jungle: ['drum and bass', 'breakbeat', 'half-time', 'jungle', 'amen', 'dnb'],
+  amapiano: ['afrobeats', 'amapiano', 'log drum', 'african', 'afro'],
+  chiptune: ['retrowave', 'synthwave', 'chiptune', 'gameboy', 'arcade', 'outrun', '8-bit', '8bit', 'nes', '80s'],
+  koto: ['hirajoshi', 'japanese', 'oriental', 'koto'],
+  bossa: ['brazilian', 'samba', 'bossa', 'latin'],
+  mathrock: ['polymeter', 'odd-time', 'math', 'poly'],
+  footwork: ['footwork', 'chicago', 'juke', 'trap', '808', '160'],
+  cyberpunk: ['cyberpunk'],
+};
+
+function matchGenreByKeyword(text: string): string | null {
+  let best: { genre: string; length: number } | null = null;
+  for (const [genre, keywords] of Object.entries(GENRE_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (text.includes(keyword) && (!best || keyword.length > best.length)) {
+        best = { genre, length: keyword.length };
+      }
+    }
+  }
+  return best ? best.genre : null;
+}
+
 export function generateHeuristicTrack(
   prompt: string,
   style: string = '',
   complexity: 'Beginner' | 'Intermediate' | 'Advanced' = 'Intermediate',
   tempo: number = 120
 ): AIGeneratedTrack {
-  const p = prompt.toLowerCase();
+  const p = `${prompt} ${style}`.toLowerCase();
 
-  let matchedGenre = 'cyberpunk';
-  if (p.includes('lofi') || p.includes('lo-fi') || p.includes('chill') || p.includes('coffee') || p.includes('jazz')) {
-    matchedGenre = 'lofi';
-  } else if (p.includes('acid') || p.includes('303') || p.includes('techno') || p.includes('industrial') || p.includes('rave')) {
-    matchedGenre = 'acid';
-  } else if (p.includes('ambient') || p.includes('drone') || p.includes('meditation') || p.includes('sleep') || p.includes('calm')) {
-    matchedGenre = 'ambient';
-  } else if (p.includes('garage') || p.includes('2-step') || p.includes('ukg') || p.includes('swing')) {
-    matchedGenre = 'ukgarage';
-  } else if (style && GENRE_TEMPLATES[style.toLowerCase().replace(/[^a-z]/g, '')]) {
-    matchedGenre = style.toLowerCase().replace(/[^a-z]/g, '');
-  }
+  const styleKey = style.toLowerCase().replace(/[^a-z]/g, '');
+  let matchedGenre =
+    styleKey && GENRE_TEMPLATES[styleKey] ? styleKey : matchGenreByKeyword(p) || 'cyberpunk';
 
   const template = GENRE_TEMPLATES[matchedGenre] || GENRE_TEMPLATES.cyberpunk;
   const pattern = template.patterns[Math.floor(Math.random() * template.patterns.length)];

@@ -91,11 +91,11 @@ export const LineByLineBreakdown: React.FC<LineByLineBreakdownProps> = ({
                     className="bg-gray-100 p-2 rounded border border-gray-100 flex flex-col gap-1"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <code className="text-[11px] text-orange-600 font-bold bg-black/5 px-1.5 py-0.2 rounded border border-gray-100 truncate">
+                      <code className="text-[11px] text-orange-600 font-bold bg-black/5 px-1.5 py-0.5 rounded border border-gray-100 truncate">
                         {item.line}
                       </code>
                       <span
-                        className={`text-[9px] font-bold px-1.5 py-0.2 rounded border shrink-0 uppercase ${getRoleBadge(
+                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 uppercase ${getRoleBadge(
                           item.role
                         )}`}
                       >
@@ -131,7 +131,7 @@ export const LineByLineBreakdown: React.FC<LineByLineBreakdownProps> = ({
                     <p className="text-[10px] text-gray-600">
                       {guide.explanation}
                     </p>
-                    <code className="text-[9px] text-orange-600 bg-black/5 px-1 py-0.2 rounded mt-0.5">
+                    <code className="text-[9px] text-orange-600 bg-black/5 px-1 py-0.5 rounded mt-0.5">
                       {guide.example}
                     </code>
                   </div>

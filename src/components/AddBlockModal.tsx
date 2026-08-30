@@ -138,7 +138,7 @@ export const AddBlockModal: React.FC<AddBlockModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-3 animate-fade-in font-sans">
       <div
-        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-gray-900 animate-scale-up"
+        className="bg-[var(--app-card-1)] border border-gray-200 rounded-2xl w-full max-w-xl max-h-[88dvh] flex flex-col shadow-2xl overflow-hidden text-gray-900 animate-scale-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
