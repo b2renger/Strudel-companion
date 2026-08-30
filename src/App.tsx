@@ -108,6 +108,21 @@ export default function App() {
     }
   }, []);
 
+  // A failure that happens AFTER evaluation — the scheduler throwing mid-cycle,
+  // or play() failing to start — has no return value for anyone to check, so
+  // it used to reach the user as silence with the transport still reading
+  // PLAYING. Subscribing here puts it in the error banner like any other.
+  useEffect(() => {
+    // Wrapped: subscribeEval returns Set.delete, whose boolean is not a valid
+    // effect destructor.
+    const unsubscribe = audioEngine.subscribeEval((ev) => {
+      if (!ev.success && ev.error) setErrorMessage(ev.error);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
   // Sync engine cycle for header badge
   useEffect(() => {
     const interval = setInterval(() => {
@@ -120,6 +135,18 @@ export default function App() {
     }, 150);
     return () => clearInterval(interval);
   }, []);
+
+  /**
+   * Cancelling is not an error. `aiManager.cancel()` now rejects the in-flight
+   * call rather than quietly substituting rule-based output, so the rejection
+   * arrives here — and putting "Cancelled." in the red error banner would just
+   * be a different kind of lie.
+   */
+  const reportAiFailure = (err: any, fallback: string) => {
+    const message = err?.message || fallback;
+    if (message === 'Cancelled.') return;
+    setErrorMessage(message);
+  };
 
   // Safe code change handler
   const handleCodeChange = useCallback((newCode: string) => {
@@ -387,7 +414,7 @@ export default function App() {
         setErrorMessage('Failed to generate track with AI');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Error during AI generation');
+      reportAiFailure(err, 'Error during AI generation');
     } finally {
       setIsGenerating(false);
     }
@@ -438,7 +465,7 @@ export default function App() {
         setErrorMessage('Failed to tweak pattern');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Error during tweak');
+      reportAiFailure(err, 'Error during tweak');
     } finally {
       setIsTweaking(false);
     }
@@ -504,7 +531,7 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      console.error('Variations error:', err);
+      reportAiFailure(err, 'Could not create variations');
     } finally {
       setIsLoadingVariations(false);
     }

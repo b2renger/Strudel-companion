@@ -7,7 +7,7 @@
 import { TriggeredNote } from '../types';
 import { isDrumName } from '../audio/vocabulary';
 import { validatePattern, warmUpValidator } from '../audio/validate';
-import { log as dlog, warn as dwarn, event as devent } from '../ai/diagnostics';
+import { log as dlog, warn as dwarn, event as devent, error as derror } from '../ai/diagnostics';
 
 export interface EvalEvent {
   timestamp: number;
@@ -27,6 +27,23 @@ export interface EvalEvent {
    * was counted, logged and silent.
    */
   silentTokens?: string[];
+}
+
+/**
+ * Every number parsed out of a pattern passes through here before it can reach
+ * Web Audio.
+ *
+ * Web Audio does not tolerate what a live-coding editor will happily hand it.
+ * A non-finite value in `setValueAtTime` throws `TypeError`, `createBuffer`
+ * with a zero length throws `NotSupportedError`, and both throws land in the
+ * scheduler where nothing catches them — so `.decay(0)` or `.cpm(0)` killed
+ * playback outright while the transport still read PLAYING. The values come
+ * from a text editor and from language models; treating them as trusted was
+ * the mistake.
+ */
+export function clamp(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 export type NoteCallback = (note: TriggeredNote) => void;
@@ -267,9 +284,12 @@ class StrudelAudioEngine {
       this.currentCode = code;
 
       // Extract BPM if present in code like .cpm(120) or .cps(1)
+      // Via setBpm, NOT by assignment. `.cpm(0)` used to write 0 straight to
+      // `this.bpm`, past the 20..300 clamp, making the cycle duration Infinity
+      // and every scheduled time non-finite — which throws inside Web Audio.
       const cpmMatch = code.match(/\.cpm\((\d+)\)/);
       if (cpmMatch && cpmMatch[1]) {
-        this.bpm = parseInt(cpmMatch[1], 10);
+        this.setBpm(parseInt(cpmMatch[1], 10));
       } else {
         const cpsMatch = code.match(/\.cps\(\s*([\d.]+)\s*(?:([/*])\s*([\d.]+)\s*)?\)/);
         if (cpsMatch) {
@@ -283,8 +303,11 @@ class StrudelAudioEngine {
           let computedCps = left;
           if (op === '/' && right) computedCps = left / right;
           else if (op === '*' && right) computedCps = left * right;
-          if (Number.isFinite(computedCps) && computedCps > 0) {
-            this.bpm = Math.round(computedCps * 60 * 4);
+          // The guard used to test the cps and then assign the derived BPM,
+          // so `.cps(0.001)` rounded to 0 and slipped through.
+          const derived = Math.round(computedCps * 60 * 4);
+          if (Number.isFinite(derived) && derived > 0) {
+            this.setBpm(derived);
           }
         }
       }
@@ -352,7 +375,31 @@ class StrudelAudioEngine {
     return this.ctx?.state === 'running';
   }
 
+  /**
+   * Never rejects. Every call site in App.tsx is a bare `audioEngine.play();`,
+   * so a rejection here would be an unhandled promise rejection with nothing
+   * shown to the user — which is exactly how a dead scheduler stayed invisible.
+   */
   public async play() {
+    try {
+      await this.startPlayback();
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      derror('audio', `PLAY FAILED — ${message}`, err);
+      this.stop();
+      this.emitEval({
+        timestamp: Date.now(),
+        cycle: this.currentCycle,
+        layersCount: this.parsedLayers.length,
+        bpm: this.bpm,
+        success: false,
+        code: this.currentCode,
+        error: `Could not start playback: ${message}`,
+      });
+    }
+  }
+
+  private async startPlayback() {
     this.init();
     if (this.ctx && this.ctx.state === 'suspended') {
       await this.ctx.resume();
@@ -419,8 +466,41 @@ class StrudelAudioEngine {
     this.activeVoiceGains.clear();
   }
 
-  // Engine cycle scheduler
+  /**
+   * One scheduler tick, wrapped so a throw can never kill playback silently.
+   *
+   * Everything below runs either inside `play()`'s promise or inside a
+   * `setTimeout`, and no caller of `play()` attaches a `.catch`. So a single
+   * bad number — `.decay(0)` reaching `createBuffer(1, 0, …)`, a non-finite
+   * time reaching `setValueAtTime` — became an unhandled rejection or a
+   * swallowed timer error, `this.timerId` was never re-armed, and `isRunning`
+   * stayed true. Audio stopped, the transport still read PLAYING, and nothing
+   * on screen or in the trace said why.
+   *
+   * The clamps in `parseSingleLayer` and `setBpm` are the real fix; this is
+   * the backstop, because the next unguarded number should be a visible error
+   * rather than a dead engine.
+   */
   private scheduleLoop() {
+    try {
+      this.runCycle();
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      derror('audio', `SCHEDULER STOPPED — ${message}`, err);
+      this.stop();
+      this.emitEval({
+        timestamp: Date.now(),
+        cycle: this.currentCycle,
+        layersCount: this.parsedLayers.length,
+        bpm: this.bpm,
+        success: false,
+        code: this.currentCode,
+        error: `Playback stopped: ${message}`,
+      });
+    }
+  }
+
+  private runCycle() {
     if (!this.isRunning || !this.ctx) return;
 
     const cycleDurationSeconds = (60 / this.bpm) * 4; // 1 Strudel cycle = 4 beats / 1 measure
@@ -574,28 +654,34 @@ class StrudelAudioEngine {
 
     // Extraction of modifier methods
     const gainMatch = str.match(/\.gain\s*\(\s*([\d\.]+)\s*\)/);
-    if (gainMatch) gain = parseFloat(gainMatch[1]);
+    if (gainMatch) gain = clamp(parseFloat(gainMatch[1]), 0, 4, 0.8);
 
     const panMatch = str.match(/\.pan\s*\(\s*([\d\.\-]+)\s*\)/);
-    if (panMatch) pan = parseFloat(panMatch[1]);
+    if (panMatch) pan = clamp(parseFloat(panMatch[1]), -1, 1, 0);
 
     const lpfMatch = str.match(/\.(?:lpf|cutoff)\s*\(\s*([\d\.]+)\s*\)/);
-    if (lpfMatch) cutoff = parseFloat(lpfMatch[1]);
+    if (lpfMatch) cutoff = clamp(parseFloat(lpfMatch[1]), 20, 20000, 12000);
 
+    // Lower bound is not cosmetic. `.decay(0)` reached `createBuffer(1, 0, …)`
+    // in the hi-hat branch, which throws and takes the scheduler with it.
     const decayMatch = str.match(/\.decay\s*\(\s*([\d\.]+)\s*\)/);
-    if (decayMatch) decay = parseFloat(decayMatch[1]);
+    if (decayMatch) decay = clamp(parseFloat(decayMatch[1]), 0.01, 8, 0.4);
 
+    // `.fast(1e9)` and `.slow(0)` both used to freeze the tab: `1/0` is
+    // Infinity, `Math.floor(Infinity)` is Infinity, and the repeat loop in
+    // resolveLayerEvents pushed events until the heap gave out. The Euclid and
+    // `*` counts were clamped for this reason; these two were missed.
     const fastMatch = str.match(/\.fast\s*\(\s*([\d\.]+)\s*\)/);
-    if (fastMatch) speedMultiplier = parseFloat(fastMatch[1]);
+    if (fastMatch) speedMultiplier = clamp(parseFloat(fastMatch[1]), 1 / 16, 16, 1);
 
     const slowMatch = str.match(/\.slow\s*\(\s*([\d\.]+)\s*\)/);
-    if (slowMatch) speedMultiplier = 1 / parseFloat(slowMatch[1]);
+    if (slowMatch) speedMultiplier = clamp(1 / parseFloat(slowMatch[1]), 1 / 16, 16, 1);
 
     const roomMatch = str.match(/\.room\s*\(\s*([\d\.]+)\s*\)/);
-    if (roomMatch) room = parseFloat(roomMatch[1]);
+    if (roomMatch) room = clamp(parseFloat(roomMatch[1]), 0, 1, 0.2);
 
     const delayMatch = str.match(/\.delay\s*\(\s*([\d\.]+)\s*\)/);
-    if (delayMatch) delay = parseFloat(delayMatch[1]);
+    if (delayMatch) delay = clamp(parseFloat(delayMatch[1]), 0, 1, 0.2);
 
     if (!pattern) {
       // If no explicit s() or note(), check if whole string is notation
@@ -1064,7 +1150,9 @@ class StrudelAudioEngine {
   ) {
     if (!this.ctx) return;
     const bufferSize = this.ctx.sampleRate * duration;
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    // Never zero: createBuffer throws NotSupportedError on a zero length, and
+    // it is called from inside the scheduler where a throw stops playback.
+    const buffer = this.ctx.createBuffer(1, Math.max(1, bufferSize), this.ctx.sampleRate);
     const output = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
       output[i] = Math.random() * 2 - 1;

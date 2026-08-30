@@ -118,6 +118,8 @@ class AIManager {
 
   /** Cancels the in-flight cloud request, when there is one. */
   private cloudAbort: AbortController | null = null;
+  /** When the user last pressed Cancel. See `wasJustCancelled`. */
+  private cancelledAt: number | null = null;
 
   constructor() {
     this.restorePreferences();
@@ -356,10 +358,26 @@ class AIManager {
   cancel() {
     this.cloudAbort?.abort();
     this.cloudAbort = null;
-    log('ai', 'cancel requested — aborting in-flight work');
+    event('ai', 'CANCELLED by the user');
+    // Set before the aborts below, so the rejections they cause are recognised
+    // as this cancellation and not turned into rule-based output.
+    this.cancelledAt = Date.now();
     chromeBuiltInAi.cancel();
     this.releaseWorker();
     this.emitProgress({ status: 'idle', text: 'Cancelled.', progress: 0 });
+  }
+
+  /**
+   * True when the error we are holding is the result of the user pressing
+   * Cancel, rather than an engine failing.
+   *
+   * Without this, cancelling a model download fell through `withFallback`'s
+   * catch, ran the rule-based generator and returned a pattern — so pressing
+   * "Cancel download" replaced the user's code and started playing something
+   * they had not asked for. Cancelling must produce nothing.
+   */
+  private wasJustCancelled(): boolean {
+    return this.cancelledAt !== null && Date.now() - this.cancelledAt < 5000;
   }
 
   // -------------------------------------------------------------------------
@@ -409,7 +427,19 @@ class AIManager {
     // forever and the UI spins indefinitely.
     worker.onerror = (err) => {
       const message = err.message || 'The local model worker crashed.';
+      logError('worker', `worker crashed — ${message}`, err);
       this.rejectAllPending(new Error(message));
+      // Discarded, not kept. A crashed worker was left in `this.worker`, so
+      // `ensureWorker()` handed the dead object back forever and every
+      // subsequent postMessage was a silent no-op — the "Download model"
+      // button did nothing at all, for thirty minutes per press, with no
+      // spinner and no error because nothing had reported progress yet.
+      if (this.worker === worker) this.worker = null;
+      try {
+        worker.terminate();
+      } catch {
+        /* already gone */
+      }
       this.emitProgress({ status: 'error', text: message, progress: 0, errorMessage: message });
     };
 
@@ -518,6 +548,17 @@ class AIManager {
     } catch (err: any) {
       const reason = err?.message || 'Unknown error.';
       t.end(`${label} — ${AI_ENGINE_LABELS[requested]} FAILED`);
+
+      // Cancelling is not a failure to route around. Falling back here meant
+      // "Cancel download" ran the rule-based generator, replaced the user's
+      // pattern and started playing it — the opposite of what the button says.
+      if (this.wasJustCancelled()) {
+        this.cancelledAt = null;
+        event('ai', `CANCELLED during "${label}" — no pattern produced`);
+        this.emitProgress({ status: 'idle', text: 'Cancelled.', progress: 0 });
+        throw new Error('Cancelled.');
+      }
+
       logError(
         'ai',
         `${AI_ENGINE_LABELS[requested]} failed during "${label}" — falling back to the ` +

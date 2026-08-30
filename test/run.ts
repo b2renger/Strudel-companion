@@ -51,6 +51,7 @@ import {
   stripCommentsLenient,
 } from '../src/ai/sanitizeCode.ts';
 import { completionIsDone } from '../src/ai/streamStop.ts';
+import { clamp } from '../src/engine/audioEngine.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -1022,6 +1023,25 @@ test('a valid JSON reply survives prose around it', () => {
     '"explanation":"e","summary":"s"}\nDone.';
   assert.ok(parseTweakResult(prosey).code.includes('bd*4'));
   assert.equal(parseGeneratedTrack(prosey).bpm, 138);
+});
+
+test('numbers from a pattern are clamped before they can reach Web Audio', () => {
+  // Web Audio throws on what a text editor will happily produce, and the throw
+  // lands in the scheduler where nothing catches it. `.slow(0)` gave Infinity,
+  // which froze the tab outright; `.decay(0)` gave a zero-length buffer.
+  // Non-finite takes the fallback rather than the bound: `.slow(0)` is 1/0,
+  // and normal speed is a kinder reading of it than 16x.
+  assert.equal(clamp(1 / 0, 1 / 16, 16, 1), 1, 'Infinity must not pass');
+  assert.equal(clamp(-1 / 0, 1 / 16, 16, 1), 1);
+  assert.equal(clamp(NaN, 1 / 16, 16, 1), 1, 'NaN must fall back');
+  // A finite out-of-range value IS clamped, not discarded.
+  assert.equal(clamp(1e9, 1 / 16, 16, 1), 16);
+  assert.equal(clamp(-5, 0, 4, 0.8), 0);
+  assert.equal(clamp(0, 0.01, 8, 0.4), 0.01, 'a zero decay must not reach createBuffer');
+  // Ordinary values pass through untouched.
+  assert.equal(clamp(0.8, 0, 4, 0.8), 0.8);
+  assert.equal(clamp(-0.3, -1, 1, 0), -0.3);
+  assert.equal(clamp(1200, 20, 20000, 12000), 1200);
 });
 
 // ---------------------------------------------------------------------------
