@@ -37,6 +37,7 @@ import { AIParseError } from '../ai/outputParser';
 import { AIWorkerRequest, AIWorkerResponse } from '../types';
 import { log, event, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
 import { setForwarder } from '../ai/sessionLog';
+import { completionIsDone } from '../ai/streamStop';
 
 // The worker owns a separate module instance, so anything it records here
 // would be invisible to a trace exported on the main thread. Forward instead.
@@ -75,52 +76,6 @@ const BUDGET = {
   fix: 700,
   retry: 500,
 } as const;
-
-/**
- * Returns a reason when the reply is structurally finished, so generation can
- * be stopped instead of running to the cap.
- */
-function completionIsDone(text: string): string | null {
-  const fences = (text.match(/```/g) || []).length;
-
-  if (fences >= 3) return 'the model started a second code block';
-
-  if (fences >= 2) {
-    const after = text.slice(text.lastIndexOf('```') + 3);
-    // Enough room for TITLE / BPM / GENRE / WHY / two NOTE lines.
-    if (after.length > 400) return 'the label block is complete';
-    if (/\n[ \t]*\n[ \t]*\n/.test(after)) return 'the model ran out of labels';
-    return null;
-  }
-
-  // The retry prompt asks for bare code with no fence. Stop once the
-  // top-level call balances and the model has moved on to something else.
-  if (fences === 0) {
-    const start = text.search(/(?:^|\n)[ \t]*(?:stack|sound|note|n|s)[ \t]*\(/);
-    if (start === -1) return null;
-    let depth = 0;
-    let quote: string | null = null;
-    for (let i = start; i < text.length; i++) {
-      const c = text[i];
-      if (quote) {
-        if (c === quote && text[i - 1] !== '\\') quote = null;
-        continue;
-      }
-      if (c === '"' || c === "'" || c === '`') {
-        quote = c;
-        continue;
-      }
-      if (c === '(') depth++;
-      else if (c === ')') {
-        depth--;
-        if (depth === 0) {
-          return text.length - i > 40 ? 'the pattern is closed and the model kept typing' : null;
-        }
-      }
-    }
-  }
-  return null;
-}
 
 function send(response: AIWorkerResponse) {
   self.postMessage(response);
@@ -233,7 +188,12 @@ interface Completion {
   truncated: boolean;
 }
 
-async function complete(reqId: string, userPrompt: string, maxTokens: number): Promise<Completion> {
+async function complete(
+  reqId: string,
+  userPrompt: string,
+  maxTokens: number,
+  expectsCode = true,
+): Promise<Completion> {
   if (!engine) throw new Error('The local model is not loaded.');
 
   const spec = getModelSpec(loadedModelId || '');
@@ -299,7 +259,10 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
     // carry on with a second pattern or an unasked-for explanation until the
     // cap, which is where the 37-second dead ends in the session trace came
     // from.
-    if (delta) {
+    // `explain` produces no code block, and its LINE rows quote patterns; the
+    // early stop has nothing to anchor on there and could only cut the answer
+    // short, so it is off for that task.
+    if (delta && expectsCode) {
       const done = completionIsDone(text);
       if (done) {
         stoppedEarly = done;
@@ -363,8 +326,9 @@ async function completeAndParse<T>(
   prompt: string,
   maxTokens: number,
   parse: (raw: string) => T,
+  expectsCode = true,
 ): Promise<T> {
-  const { text, truncated } = await complete(reqId, prompt, maxTokens);
+  const { text, truncated } = await complete(reqId, prompt, maxTokens, expectsCode);
   try {
     const parsed = parse(text);
     if (truncated) event('worker', 'SALVAGED a complete pattern from the truncated reply');
@@ -460,6 +424,7 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
           buildExplainPrompt(payload.code),
           BUDGET.explain,
           parseExplanationResult,
+          false,
         );
         send({ id, type: 'result', data });
         break;

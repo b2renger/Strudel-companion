@@ -70,7 +70,7 @@ function balancedSlice(text: string, start: number): string | null {
 /** Longest-first so `sound(` is not matched as `s`. */
 const PATTERN_START = /(?:^|\n)([ \t]*)((?:stack|sound|note|n|s)\s*\()/;
 
-function extractFromCandidate(candidate: string): string | null {
+function extractFromCandidate(candidate: string, whole = candidate): string | null {
   // Comments are removed BEFORE the parentheses are counted. `balancedSlice`
   // tracks quotes but not comments, so an apostrophe in `// don't change this`
   // opened a string that never closed and swallowed the rest of the reply; a
@@ -84,36 +84,84 @@ function extractFromCandidate(candidate: string): string | null {
   // layer instead. Only reached once the strict pass has failed.
   if (candidate.includes('//')) {
     const lenient = stripCommentsLenient(candidate).code;
-    return sliceFrom(lenient) ?? sliceClosingComments(lenient);
+    return sliceFrom(lenient) ?? sliceClosingComments(lenient, whole);
   }
   return null;
 }
 
 /**
- * Recovers the case where a trailing comment swallowed the closing bracket.
+ * True when the very end of `text` sits inside a `//` comment.
  *
- * Gemini returned this verbatim in the session trace, all on one line:
+ * String-aware, so a `//` inside a mini-notation string does not count.
+ */
+function endsInsideLineComment(text: string): boolean {
+  let quote: string | null = null;
+  let inComment = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inComment) {
+      if (c === '\n') inComment = false;
+      continue;
+    }
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      inComment = true;
+      i++;
+    }
+  }
+  return inComment;
+}
+
+/**
+ * Recovers the one case where a trailing comment swallowed the closing bracket.
+ *
+ * Gemini returned this verbatim, all on one line:
  *
  *   stack(s("bd ...").gain(0.8), // ... s("hh(5,8)*2")... // ... progression.)
  *
  * The final `)` is inside the last comment, so no amount of comment stripping
  * leaves a balanced expression.
  *
- * This is deliberately NOT a general "repair the brackets" pass, because that
- * is precisely how a reply cut off by the token limit turns into a plausible
- * half-written pattern — the failure mode this whole file exists to prevent.
- * Three constraints keep the two cases apart:
+ * The danger is obvious and was very nearly realised: a general "close the
+ * brackets" pass turns a reply cut off by the token limit into a plausible
+ * half-written pattern, which is the exact failure this whole file exists to
+ * prevent. An earlier version of this function guarded only on "the text
+ * contained a //", and a truncated tweak reply that happened to carry one
+ * comment sailed through as a complete four-layer pattern and overwrote the
+ * user's work, reported as success.
  *
- *   - it only runs after comment stripping, on text that HAD comments;
- *   - it truncates back to the last layer that closed cleanly, so a partial
- *     trailing layer is discarded rather than completed;
- *   - it gives up past two unclosed brackets.
+ * Three conditions now have to hold together, and each one alone rules the
+ * truncation case out:
  *
- * A truncated reply fails all the same, because its text does not reach this
- * function: `looksTruncated` and the caller's own checks come first, and a
- * reply with no comments never gets here at all.
+ *   1. No unterminated code fence. A model that opened ``` and never closed it
+ *      was cut off; that is a truncation signal, not a comment problem.
+ *   2. Nothing but whitespace after the last cleanly closed layer. If real
+ *      content follows it, the reply stopped mid-layer — exactly what
+ *      truncation looks like, and never what a swallowed bracket looks like,
+ *      because there the only thing that followed was the comment we just
+ *      removed.
+ *   3. Exactly one bracket missing. Truncating back to the last clean layer
+ *      leaves the outer call and nothing else open, so anything other than one
+ *      means a bracket went missing mid-structure, which is not this case.
  */
-function sliceClosingComments(text: string): string | null {
+function sliceClosingComments(text: string, original: string): string | null {
+  // (0) the reply must actually END inside a comment. That is what "the
+  //     comment ate the closing bracket" means, and it is the one thing a
+  //     truncated reply can never look like: truncation stops in the middle of
+  //     code, not in the middle of a trailing comment.
+  if (!endsInsideLineComment(original)) return null;
+
+  // (1) an unterminated fence means the reply was cut off.
+  if ((original.match(/```/g) || []).length % 2 === 1) return null;
+
   const m = PATTERN_START.exec(text);
   if (!m) return null;
   const start = m.index + (m[0].length - m[2].length);
@@ -142,10 +190,13 @@ function sliceClosingComments(text: string): string | null {
   }
 
   if (quote !== null) return null; // an unterminated string is a real failure
-  if (depth < 1 || depth > 2) return null;
+  if (depth !== 1) return null; // (3)
   if (lastCleanEnd === -1) return null;
 
-  return `${text.slice(start, lastCleanEnd).trim()}${')'.repeat(depth)}`;
+  // (2) whatever follows the last complete layer must be nothing at all.
+  if (text.slice(lastCleanEnd).trim() !== '') return null;
+
+  return `${text.slice(start, lastCleanEnd).trim()})`;
 }
 
 function sliceFrom(text: string): string | null {
@@ -208,7 +259,10 @@ export function extractCodeBlock(text: string): string | null {
   candidates.push(text);
 
   for (const candidate of candidates) {
-    const found = extractFromCandidate(candidate);
+    // `text`, not `candidate`: the truncation signals live in the whole reply.
+    // Passing the fence-stripped candidate here hid the unterminated fence
+    // that is the clearest evidence a reply was cut off.
+    const found = extractFromCandidate(candidate, text);
     if (found) return found;
   }
   return null;
@@ -281,6 +335,11 @@ export function extractJsonFromOutput<T = any>(text: string): T | null {
   return null;
 }
 
+/** Musical tempos only. Guards against a truncated or hallucinated BPM. */
+function sensibleBpm(value: number, fallback: number): number {
+  return Number.isFinite(value) && value >= 40 && value <= 240 ? value : fallback;
+}
+
 const VALID_ROLES = ['Drums', 'Bass', 'Harmony', 'Melody', 'FX', 'Structure'] as const;
 type Role = (typeof VALID_ROLES)[number];
 
@@ -305,7 +364,7 @@ export function parseGeneratedTrack(
     return {
       code: finalizeCode(extractCodeBlock(json.code) || json.code.trim(), 'generated track', rawOutput),
       title: json.title || 'Untitled Pattern',
-      bpm: Number(json.bpm) || defaultBpm,
+      bpm: sensibleBpm(Number(json.bpm), defaultBpm),
       genre: json.genre || defaultGenre,
       explanation: json.explanation || '',
       notationBreakdown: Array.isArray(json.notationBreakdown) ? json.notationBreakdown : [],
@@ -332,12 +391,16 @@ export function parseGeneratedTrack(
     })
     .filter((n) => n.symbolOrMethod && n.meaning);
 
+  // Range-checked, not just "finite and positive". A reply cut off mid-label
+  // yields `BPM: 1`, which passed the old test and reached the engine as a
+  // twelve-second cycle.
   const bpm = Number((firstLabel(labels, 'BPM') || '').replace(/[^\d.]/g, ''));
+  const bpmUsable = Number.isFinite(bpm) && bpm >= 40 && bpm <= 240;
 
   return {
     code: finalizeCode(code, 'generated track', rawOutput),
     title: firstLabel(labels, 'TITLE') || 'Untitled Pattern',
-    bpm: Number.isFinite(bpm) && bpm > 0 ? bpm : defaultBpm,
+    bpm: bpmUsable ? bpm : defaultBpm,
     genre: firstLabel(labels, 'GENRE') || defaultGenre,
     explanation:
       firstLabel(labels, 'WHY') ||

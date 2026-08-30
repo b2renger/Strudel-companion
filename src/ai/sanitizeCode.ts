@@ -151,6 +151,42 @@ export function stripCommentsLenient(code: string): { code: string; count: numbe
   return { code: out, count };
 }
 
+const MASK = '\u0000';
+
+/**
+ * Replaces every string literal with an opaque placeholder.
+ *
+ * The structural repairs below are regexes over the whole file, and a
+ * mini-notation string is full of characters that look like code. The stray
+ * `.~` repair in particular used to rewrite `s("bd sd . ~ hh hh")` into
+ * `s("bd sd hh hh")` — six steps silently became four, it validated cleanly,
+ * and nothing anywhere reported it.
+ */
+function maskStrings(code: string): { masked: string; parts: string[] } {
+  const parts: string[] = [];
+  let out = '';
+  let i = 0;
+
+  while (i < code.length) {
+    const c = code[i];
+    if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < code.length && !(code[j] === c && code[j - 1] !== '\\')) j++;
+      parts.push(code.slice(i, Math.min(j + 1, code.length)));
+      out += `${MASK}${parts.length - 1}${MASK}`;
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return { masked: out, parts };
+}
+
+function unmaskStrings(masked: string, parts: string[]): string {
+  return masked.replace(new RegExp(`${MASK}(\\d+)${MASK}`, 'g'), (_m, n: string) => parts[Number(n)] ?? '');
+}
+
 /** Splits `a, b, c` on commas that are not nested inside brackets or quotes. */
 function splitTopLevelArgs(inner: string): string[] {
   const parts: string[] = [];
@@ -226,52 +262,10 @@ const SOURCE_NOTE = /(?:^|[^.\w])(?:note|n)\s*\(\s*["'`]([^"'`]*)["'`]\s*\)/;
 function applyTextRepairs(code: string, repairs: string[]): string {
   let out = code;
 
-  // `s("303").~ .lpf(800)` — a stray `.~` produced by small models.
-  const strayTilde = out.replace(/\.\s*~\s*/g, '');
-  if (strayTilde !== out) {
-    repairs.push('removed a stray ".~"');
-    out = strayTilde;
-  }
-
-  // `.pan(0.4).` at the end of a line — always a syntax error, and the residue
-  // of a comment that used to follow the dot and ate the layer separator with
-  // it. When the next line opens a new layer, the dot is replaced by the comma
-  // that clearly belonged there; otherwise it is just dropped.
-  const dangling = out.replace(
-    /\.[ \t]*(\r?\n[ \t]*)(?=(\S))/g,
-    (_m, nl: string, nextChar: string, offset: number, whole: string) => {
-      const after = whole.slice(offset);
-      const startsLayer = /^\.[ \t]*\r?\n[ \t]*(?:stack|sound|note|s|n)[ \t]*\(/.test(after);
-      void nextChar;
-      return startsLayer ? `,${nl}` : nl;
-    },
-  );
-  if (dangling !== out) {
-    repairs.push('repaired a dangling "." at the end of a line');
-    out = dangling;
-  }
-
-  // Trailing whitespace left where a comment used to be.
-  const trimmedLines = out.replace(/[ \t]+(?=\r?\n)/g, '');
-  if (trimmedLines !== out) out = trimmedLines;
-
-  // `note("c3").s("a").s("b")` — several chained instrument selectors. The last
-  // one wins, so the earlier ones are noise; dropping them keeps the layer's
-  // intent and removes the ambiguity.
-  const beforeChains = out;
-  let pass;
-  do {
-    pass = out;
-    out = out.replace(
-      /\.[ \t]*(?:s|sound)[ \t]*\(\s*(["'`])[^"'`]*\1\s*\)(?=\s*\.[ \t]*(?:s|sound)[ \t]*\()/g,
-      '',
-    );
-  } while (out !== pass);
-  if (out !== beforeChains) repairs.push('dropped an overridden .s("…") selector');
-
+  // The repairs from here to the mask boundary need to see inside strings.
+  //
   // `s("rhodes").s("rhodes")` — the source call and the instrument selector
-  // given the same argument. Keep the instrument selector, drop the duplicate
-  // source, so the layer at least names its voice once.
+  // given the same argument. Keep the source, drop the duplicate selector.
   const doubledS = out.replace(
     /(?:^|[^.\w])(s|sound)\s*\(\s*(["'`])([^"'`]*)\2\s*\)\s*\.\s*(?:s|sound)\s*\(\s*(["'`])([^"'`]*)\4\s*\)/g,
     (match, _fn, _q1, first: string, _q2, second: string) => {
@@ -285,6 +279,19 @@ function applyTextRepairs(code: string, repairs: string[]): string {
     out = doubledS;
   }
 
+  // `note("c3").s("a").s("b")` — several chained instrument selectors. The last
+  // one wins, so the earlier ones are noise.
+  const beforeChains = out;
+  let pass;
+  do {
+    pass = out;
+    out = out.replace(
+      /\.[ \t]*(?:s|sound)[ \t]*\(\s*(["'`])[^"'`]*\1\s*\)(?=\s*\.[ \t]*(?:s|sound)[ \t]*\()/g,
+      '',
+    );
+  } while (out !== pass);
+  if (out !== beforeChains) repairs.push('dropped an overridden .s("…") selector');
+
   // `.pan("0 1")` — a quoted argument to a numeric effect is parsed as a note
   // pattern and silences the layer. Keep the first number in the string.
   const quotedArgs = out.replace(
@@ -296,6 +303,61 @@ function applyTextRepairs(code: string, repairs: string[]): string {
     out = quotedArgs;
   }
 
+  // ---- structural repairs, with string literals masked out ----------------
+  const { masked, parts } = maskStrings(out);
+  let body = masked;
+
+  // `s("303").~ .lpf(800)` — a stray `.~` produced by small models.
+  const strayTilde = body.replace(/\.\s*~\s*/g, '');
+  if (strayTilde !== body) {
+    repairs.push('removed a stray ".~"');
+    body = strayTilde;
+  }
+
+  // A layer that ends with "." — always a syntax error, and the residue of a
+  // comment that followed the dot and ate the layer separator with it.
+  //
+  // Indentation decides which it was. A deeper next line is a method chain
+  // broken across lines (legal JS) and keeps its dot; a next line at the same
+  // level or shallower is a new layer and gets the comma back.
+  const lines = body.split('\n');
+  let danglingFixed = false;
+  for (let i = 0; i < lines.length - 1; i++) {
+    const m = lines[i].match(/^(\s*)(.*?)\.[ \t]*$/);
+    if (!m || !m[2].trim()) continue;
+    const indent = m[1].length;
+    const next = lines[i + 1];
+    if (!next.trim()) continue;
+    const nextIndent = next.match(/^\s*/)![0].length;
+    if (nextIndent > indent && /^\s*[a-zA-Z_$]/.test(next)) continue; // method chain
+    const startsLayer = /^\s*(?:stack|sound|note|s|n)\s*\(/.test(next);
+    lines[i] = m[1] + m[2] + (startsLayer ? ',' : '');
+    danglingFixed = true;
+  }
+  if (danglingFixed) {
+    repairs.push('repaired a dangling "." at the end of a line');
+    body = lines.join('\n');
+  }
+
+  // Two layers with no comma between them. Small models drop the separator
+  // constantly — one session trace has a six-layer stack with none at all,
+  // which Strudel reports as `Unexpected token (3:2)`. A `)` followed by a
+  // newline and then a new call is unambiguous: neither `),` nor `)\n.method`
+  // nor `)\n)` matches.
+  const commas = body.replace(
+    /\)([ \t]*\r?\n[ \t]*)(?=(?:stack|sound|note|s|n)[ \t]*\()/g,
+    ')_COMMA_$1',
+  );
+  if (commas !== body) {
+    repairs.push('inserted a missing comma between two layers');
+    body = commas.replace(/\)_COMMA_/g, '),');
+  }
+
+  // Trailing whitespace left where a comment used to be.
+  body = body.replace(/[ \t]+(?=\r?\n)/g, '');
+
+  out = unmaskStrings(body, parts);
+
   // `shaker(e,i)` — Euclid needs integers. Reaching Strudel's own transpiler
   // with this came back as `RangeError: Invalid array length`, which is what
   // the user was shown. Handled inside string literals only, where a
@@ -305,8 +367,13 @@ function applyTextRepairs(code: string, repairs: string[]): string {
       /([a-zA-Z_~][a-zA-Z0-9_]*)\(([^)]*)\)/g,
       (call, name: string, args: string) => {
         const parts = args.split(',').map((a) => a.trim());
-        const allInts = parts.length >= 2 && parts.every((a) => /^-?\d+$/.test(a));
-        if (allInts) return call;
+        // `bd(<3 5>,8)` is legitimate: `tokenizeMiniNotation` expands `<…>`
+        // BEFORE the Euclid regex runs, so the engine plays 3-over-8 on one
+        // cycle and 5-over-8 on the next. Rewriting it to `s("bd")` destroyed
+        // the rhythm.
+        const isCount = (a: string) => /^-?\d+$/.test(a) || /^[<[][\d\s]+[>\]]$/.test(a);
+        const allCounts = parts.length >= 2 && parts.every(isCount);
+        if (allCounts) return call;
         repairs.push(`dropped a non-numeric Euclid argument in "${name}(${args})"`);
         return name;
       },
@@ -340,6 +407,25 @@ export function sanitizeGeneratedCode(code: string, label = 'model output'): San
   // ---- dead-layer removal, inside stack(...) only -------------------------
   let allLayersDead = false;
   const stackStart = out.search(/(?:^|[^.\w])stack\s*\(/);
+
+  // A reply with no stack() wrapper is still a pattern, and it was skipping
+  // this check entirely: `s("rhodes")` on its own was accepted, validated and
+  // reported as "EVALUATED OK — 1 layer(s)" while making no sound. The compact
+  // tweak and variation prompts, and buildRetryPrompt, none of them guarantee
+  // a wrapper.
+  if (stackStart === -1) {
+    const m = SOURCE_S.exec(out);
+    if (m && !SOURCE_NOTE.test(out) && samplePatternIsDead(m[1])) {
+      const voice = m[1].trim().split(/[\s(]/)[0].toLowerCase();
+      problems.push(
+        SYNTH_VOICE_SET.has(voice)
+          ? `s("${m[1].trim()}") is silent — "${voice}" is a synth voice, so it needs note("…").s("${voice}")`
+          : `s("${m[1].trim()}") is silent — no playable drum name in it`,
+      );
+      allLayersDead = true;
+    }
+  }
+
   if (stackStart !== -1) {
     const open = out.indexOf('(', stackStart);
     let depth = 0;

@@ -45,6 +45,7 @@ import {
   stripComments,
   stripCommentsLenient,
 } from '../src/ai/sanitizeCode.ts';
+import { completionIsDone } from '../src/ai/streamStop.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -674,6 +675,82 @@ test('every starter preset survives the validator', () => {
     const v = validateStructure(preset.code);
     assert.equal(v.ok, true, `${preset.title}: ${v.error}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Streaming stop condition. Simulated character by character, because that is
+// how the worker sees it and the bugs here are all off-by-a-few-characters.
+// ---------------------------------------------------------------------------
+
+/** Returns the text the worker would have when it decides to stop, or null. */
+function streamUntilStop(full: string): string | null {
+  for (let i = 1; i <= full.length; i++) {
+    const partial = full.slice(0, i);
+    if (completionIsDone(partial)) return partial;
+  }
+  return null;
+}
+
+const FENCE = '`' + '`' + '`';
+
+test('an unfenced reply keeps its whole label block', () => {
+  // The budget was 40 characters past the closing bracket, so this stopped at
+  // "BPM: 1" and the parser accepted 1 as the tempo.
+  const reply =
+    'stack(\n  s("bd*4"),\n  s("hh*8")\n)\n' +
+    'TITLE: Midnight Corridor of Iron\nBPM: 138\nGENRE: Techno\n' +
+    'WHY: A driving four-on-the-floor with a dark C minor bass.\n';
+  const stopped = streamUntilStop(reply);
+  const seen = stopped ?? reply;
+  assert.ok(seen.includes('BPM: 138'), `cut before the BPM: ${JSON.stringify(seen.slice(-60))}`);
+  assert.ok(seen.includes('GENRE: Techno'), 'cut before the genre');
+});
+
+test('a truncated BPM is not accepted as a tempo', () => {
+  const cut = 'stack(\n  s("bd*4")\n)\nTITLE: Iron Corridor\nBPM: 1';
+  assert.equal(parseGeneratedTrack(cut, 'x', 'Techno', 120).bpm, 120, 'BPM 1 was accepted');
+  // A real tempo still comes through.
+  const whole = 'stack(\n  s("bd*4")\n)\nTITLE: Iron Corridor\nBPM: 138\n';
+  assert.equal(parseGeneratedTrack(whole, 'x', 'Techno', 120).bpm, 138);
+});
+
+test('an unclosed code fence still stops generation', () => {
+  // The most common small-model slip, and the case the early stop was written
+  // for. It previously fell through every branch and never fired at all, so
+  // these replies ran to the full token cap — 37 seconds in the session trace.
+  const rambling =
+    FENCE + 'strudel\nstack(\n  s("bd*4"),\n  s("hh*8")\n)\n' +
+    'Now let me explain what I did here in a great deal of detail. '.repeat(12);
+  const stopped = streamUntilStop(rambling);
+  assert.ok(stopped, 'never stopped');
+  // The pattern is ~55 chars, so stopping means LABEL_BUDGET past it and no
+  // more — roughly 100 tokens instead of the 800-token cap it used to run to.
+  assert.ok(stopped!.length < 500, `stopped too late: ${stopped!.length} chars`);
+  assert.ok(stopped!.includes('s("hh*8")'), 'stopped before the pattern was complete');
+});
+
+test('generation stops when the model starts a second pattern', () => {
+  const restart =
+    'stack(\n  s("bd*4")\n)\nTITLE: One\n\nstack(\n  s("sd*4")\n)';
+  const stopped = streamUntilStop(restart);
+  assert.ok(stopped, 'never stopped');
+  assert.ok(!stopped!.includes('sd*4'), 'let the second pattern through');
+});
+
+test('a complete fenced reply is not cut short', () => {
+  const reply =
+    FENCE + 'strudel\nstack(\n  s("bd*4"),\n  s("hh*8")\n)\n' + FENCE +
+    '\nTITLE: Iron\nBPM: 130\nGENRE: Techno\nWHY: Driving and dark.\n';
+  const stopped = streamUntilStop(reply);
+  const seen = stopped ?? reply;
+  assert.ok(seen.includes('BPM: 130'), 'cut before the BPM');
+  assert.ok(seen.includes('WHY:'), 'cut before the explanation');
+});
+
+test('an incomplete pattern never stops generation', () => {
+  assert.equal(completionIsDone('stack(\n  s("bd*4"),\n  note("<c2 eb2'), null);
+  assert.equal(completionIsDone(FENCE + 'strudel\nstack(\n  s("bd*4"),'), null);
+  assert.equal(completionIsDone('Sure! Let me write you a pattern.'), null);
 });
 
 // ---------------------------------------------------------------------------

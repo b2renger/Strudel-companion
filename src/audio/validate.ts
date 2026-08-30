@@ -109,7 +109,10 @@ export function validateStructure(code: string): ValidationResult {
   for (const m of withoutComments.matchAll(/(["'`])([^"'`]*)\1/g)) {
     for (const call of m[2].matchAll(/([a-zA-Z_~][a-zA-Z0-9_]*)\(([^)]*)\)/g)) {
       const args = call[2].split(',').map((a) => a.trim());
-      if (!args.every((a) => /^-?\d+$/.test(a))) {
+      // `bd(<3 5>,8)` is valid: tokenizeMiniNotation expands `<…>` before the
+      // Euclid regex runs, so it alternates 3-over-8 and 5-over-8 by cycle.
+      const isCount = (a: string) => /^-?\d+$/.test(a) || /^[<[][\d\s]+[>\]]$/.test(a);
+      if (!args.every(isCount)) {
         return {
           ok: false,
           error:
