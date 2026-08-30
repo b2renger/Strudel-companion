@@ -22,6 +22,7 @@ import {
   parseVariationResult,
   AIParseError,
 } from '../src/ai/outputParser.ts';
+import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
 import {
   parseStrudelCodeToTokens,
   findTokenExactRange,
@@ -271,6 +272,61 @@ test('an unresolvable token yields a no-op range rather than a wrong edit', () =
   const tok = { ...allTokens[0], raw: 'zzz-not-present', occurrence: 0 };
   const range = findTokenExactRange('s("bd*4")', tok as any);
   assert.equal(range.start, range.end, 'expected a zero-width range');
+});
+
+// ---------------------------------------------------------------------------
+// Procedural composer — output must always be playable
+// ---------------------------------------------------------------------------
+
+const KNOWN_SYNTHS = new Set(['piano', 'rhodes', 'pluck', 'sawtooth', 'square', 'triangle', 'sine']);
+
+test('every composed pattern passes validation', () => {
+  for (const genre of PROCEDURAL_GENRES) {
+    for (let i = 0; i < 25; i++) {
+      const track = composeTrack(genre, undefined, i * 7919 + genre.length);
+      const v = validateStructure(track.code);
+      assert.equal(v.ok, true, `${genre} seed ${i}: ${v.error}\n${track.code}`);
+    }
+  }
+});
+
+test('composed patterns only use implemented sounds', () => {
+  for (const genre of PROCEDURAL_GENRES) {
+    for (let i = 0; i < 25; i++) {
+      const { code } = composeTrack(genre, undefined, i * 104729 + genre.length);
+
+      // Sample patterns: the boundary keeps `.s("sawtooth")` out of this match.
+      for (const m of code.matchAll(/(?:^|[^.\w])s\("([^"]+)"\)/gm)) {
+        for (const raw of m[1].split(/[\s,]+/)) {
+          const name = raw.replace(/[[\]<>~?@*(){}0-9.,]/g, '').trim();
+          if (name) assert.equal(isDrumName(name), true, `${genre}: unknown drum "${name}"`);
+        }
+      }
+
+      // Instrument selectors must name a real synth voice.
+      for (const m of code.matchAll(/\.s\("([^"]+)"\)/g)) {
+        assert.ok(KNOWN_SYNTHS.has(m[1]), `${genre}: unknown synth "${m[1]}"`);
+      }
+    }
+  }
+});
+
+test('the same seed reproduces the same track', () => {
+  const a = composeTrack('lofi', undefined, 4242);
+  const b = composeTrack('lofi', undefined, 4242);
+  assert.equal(a.code, b.code);
+  assert.equal(a.title, b.title);
+});
+
+test('composition actually varies (this is the point of the module)', () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 60; i++) seen.add(composeTrack('cyberpunk', undefined, i).code);
+  // The old generator had two hardcoded cyberpunk patterns.
+  assert.ok(seen.size >= 55, `only ${seen.size}/60 distinct patterns`);
+});
+
+test('an explicit tempo is honoured', () => {
+  assert.equal(composeTrack('acid', 137, 1).bpm, 137);
 });
 
 // ---------------------------------------------------------------------------

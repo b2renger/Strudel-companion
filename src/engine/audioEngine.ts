@@ -7,6 +7,7 @@
 import { TriggeredNote } from '../types';
 import { isDrumName } from '../audio/vocabulary';
 import { validatePattern, warmUpValidator } from '../audio/validate';
+import { log as dlog, warn as dwarn } from '../ai/diagnostics';
 
 export interface EvalEvent {
   timestamp: number;
@@ -240,6 +241,7 @@ class StrudelAudioEngine {
       // `errorMessage` permanently null and the "Fix with AI" path dead.
       const validation = validatePattern(code);
       if (!validation.ok) {
+        dwarn('audio', `evaluate rejected: ${validation.error}`);
         this.emitEval({
           timestamp: Date.now(),
           cycle: this.currentCycle,
@@ -278,6 +280,8 @@ class StrudelAudioEngine {
       }
 
       this.parsedLayers = this.parseStrudelCode(code);
+      dlog('audio', `evaluated ${this.parsedLayers.length} layer(s) at ${this.bpm} BPM`,
+        this.parsedLayers.map((l) => `${l.type}:${l.pattern.slice(0, 32)}`));
       this.emitEval({
         timestamp: Date.now(),
         cycle: this.currentCycle,

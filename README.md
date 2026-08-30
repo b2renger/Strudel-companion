@@ -49,9 +49,11 @@ tiers of the same thing.
 | **Gemini (your API key)** | none | ~1–2 s | **no** | **yes** |
 
 **Built-in pattern rules** is the default because it is the only engine that
-works with no key, no download and no network. It is *not* a language model — it
-assembles patterns from hand-written musical templates across twelve genres. It
-does not truly understand your prompt, but it always works.
+works with no key, no download and no network. It is *not* a language model, so
+it does not truly understand your prompt — it matches genre keywords and then
+*composes* a pattern: it picks a root and mode, a chord progression, a kick and
+snare feel, hat density, and derives a bassline from the harmony. Every
+generation is different, and everything it emits is guaranteed to play.
 
 **Local model (WebGPU)** runs a real model in a Web Worker via
 [web-llm](https://github.com/mlc-ai/web-llm). The picker measures your hardware
@@ -67,6 +69,18 @@ automatically where it cannot run.
 a key you paste in. The key is stored in this browser's `localStorage`, is never
 sent anywhere except to Google, and can be removed with one click.
 
+#### Where to paste the API key
+
+1. Click the **AI engine button in the header** (the chip showing the current
+   engine) to open the engine picker.
+2. Choose **"Gemini, with your API key"**.
+3. The key field appears directly beneath the engine cards. Paste, press
+   **Save**.
+
+The field is also shown whenever no key is stored, whichever engine is
+selected, so it is findable without hunting. `strudel.key()` in the browser
+console reports whether a key is saved.
+
 > **If you use a Gemini key, restrict it.** Create a free key in
 > [Google AI Studio](https://aistudio.google.com/apikey) and add an HTTP-referrer
 > restriction for the domain you deploy to. A key on a public client-side site is
@@ -79,6 +93,32 @@ Every AI result carries the engine that really generated it, and the UI shows a
 **"Written by: …"** badge above the editor. If your chosen engine fails, the app
 falls back to the built-in rules — but it says so, names the reason, and offers
 an Undo. No engine ever wears another's name.
+
+### Seeing what the AI is doing
+
+Open the browser console and type `strudel.help()`.
+
+| Command | Shows |
+|---|---|
+| `strudel.report()` | everything below, in one go |
+| `strudel.engines()` | which engines are available, and why not |
+| `strudel.device()` | GPU, `shader-f16`, memory, storage, mobile detection |
+| `strudel.models()` | which local models run here, and which is recommended |
+| `strudel.cache()` | what is cached, storage used and free, whether it is persistent |
+| `strudel.status()` | what the active engine is doing right now |
+| `strudel.key()` | whether a Gemini key is stored (masked) |
+| `strudel.debug(true)` | verbose logging of every AI call — persists across reloads |
+| `strudel.cancel()` | abort the in-flight generation or download |
+
+With `strudel.debug(true)` you get, per request: the engine and model chosen,
+the prompt with an estimated token count, a warning if it will not fit the
+context window, model download progress with timings, generation throughput,
+the `finish_reason`, the raw completion, and — if anything fails — the reason
+and the raw text that could not be parsed.
+
+Verbose logging is on automatically in `npm run dev` and off in production
+until you turn it on, so ordinary visitors get a clean console. Errors are
+always shown.
 
 ---
 

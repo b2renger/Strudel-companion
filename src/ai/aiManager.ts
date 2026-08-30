@@ -54,6 +54,7 @@ import {
   parseExplanationResult,
   parseVariationResult,
 } from './outputParser';
+import { log, warn, error as logError, timer, group, preview, estimateTokens } from './diagnostics';
 import {
   generateHeuristicTrack,
   tweakHeuristicCode,
@@ -159,6 +160,11 @@ class AIManager {
       chromeBuiltInReason: nano.reason,
       hasGeminiKey: hasApiKey(),
     };
+    group('device', 'capabilities probed', () => {
+      log('device', `tier=${device.tier} f16=${device.hasF16} gpu=${device.gpuVendor || 'n/a'}`);
+      log('device', `webgpu=${this.capabilities.webgpu} nano=${this.capabilities.chromeBuiltIn}` +
+        `${nano.reason ? ` (${nano.reason})` : ''} geminiKey=${this.capabilities.hasGeminiKey}`);
+    });
     this.capabilityListeners.forEach((fn) => fn(this.capabilities));
     return this.capabilities;
   }
@@ -279,6 +285,7 @@ class AIManager {
     } catch {
       /* storage unavailable */
     }
+    log('ai', `engine → ${AI_ENGINE_LABELS[engine]}`);
     this.engineChangeListeners.forEach((fn) => fn(engine));
     this.emitProgress(this.idleProgressFor(engine));
     await this.refreshCapabilities();
@@ -292,6 +299,7 @@ class AIManager {
     } catch {
       /* storage unavailable */
     }
+    log('ai', `model → ${modelId} (previous model unloaded)`);
     // Drop the loaded model so the next request loads the new one.
     this.releaseWorker();
     this.emitProgress(this.idleProgressFor(this.activeEngine));
@@ -313,8 +321,17 @@ class AIManager {
       /* not supported everywhere */
     }
 
+    const spec0 = getModelSpec(this.selectedModelId);
+    const t = timer('worker', `load ${spec0?.name ?? this.selectedModelId}`);
+    log(
+      'worker',
+      `persistent storage ${persisted ? 'GRANTED' : 'NOT granted'} — ` +
+        `${persisted ? 'weights should survive eviction' : 'the browser may delete weights later'}`,
+    );
+
     try {
       await this.sendWorkerRequest('init', undefined, LOAD_TIMEOUT_MS);
+      t.end(`model ready (${spec0?.name ?? this.selectedModelId})`);
       const spec = getModelSpec(this.selectedModelId);
       this.emitProgress({
         status: 'ready',
@@ -327,6 +344,8 @@ class AIManager {
       return { ok: true, persisted };
     } catch (err: any) {
       const message = err?.message || 'The model failed to load.';
+      t.end('model load FAILED');
+      logError('worker', message, err);
       this.emitProgress({ status: 'error', text: message, progress: 0, errorMessage: message });
       return { ok: false, persisted, error: message };
     }
@@ -336,6 +355,7 @@ class AIManager {
   cancel() {
     this.cloudAbort?.abort();
     this.cloudAbort = null;
+    log('ai', 'cancel requested — aborting in-flight work');
     chromeBuiltInAi.cancel();
     this.releaseWorker();
     this.emitProgress({ status: 'idle', text: 'Cancelled.', progress: 0 });
@@ -348,6 +368,7 @@ class AIManager {
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
 
+    log('worker', 'spawning AI worker');
     const worker = new Worker(new URL('../workers/aiWorker.ts', import.meta.url), {
       type: 'module',
     });
@@ -424,6 +445,7 @@ class AIManager {
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timer });
+      log('worker', `→ ${type}`, { id, model: this.selectedModelId });
       worker.postMessage({ id, type, modelId: this.selectedModelId, payload } as AIWorkerRequest);
     });
   }
@@ -448,13 +470,26 @@ class AIManager {
     const requested = this.activeEngine;
 
     if (requested === 'instant-heuristic') {
-      return { data: await fallback(), producedBy: 'instant-heuristic' };
+      const t = timer('ai', `${label} — built-in pattern rules`);
+      const data = await fallback();
+      t.end(`${label} — built-in pattern rules`);
+      return { data, producedBy: 'instant-heuristic' };
     }
 
+    const t = timer('ai', `${label} — ${AI_ENGINE_LABELS[requested]}`);
+    if (requested === 'webgpu-gemma') {
+      t.mark('model', this.selectedModelId);
+    }
     this.emitProgress({ status: 'ready', text: `${label}…`, progress: 0.05 });
 
     try {
       const data = await primary();
+      t.end(`${label} — ${AI_ENGINE_LABELS[requested]} OK`);
+      group('ai', `result from ${AI_ENGINE_LABELS[requested]}`, () => {
+        const code = (data as any)?.code ?? (data as any)?.fixedCode;
+        if (typeof code === 'string') log('ai', 'code:\n' + preview(code));
+        else log('ai', 'payload', data);
+      });
       this.emitProgress({
         status: 'ready',
         text: `${AI_ENGINE_LABELS[requested]} finished.`,
@@ -463,8 +498,17 @@ class AIManager {
       return { data, producedBy: requested };
     } catch (err: any) {
       const reason = err?.message || 'Unknown error.';
-      if (import.meta.env?.DEV) {
-        console.warn(`[ai] ${requested} failed during "${label}":`, err);
+      t.end(`${label} — ${AI_ENGINE_LABELS[requested]} FAILED`);
+      logError(
+        'ai',
+        `${AI_ENGINE_LABELS[requested]} failed during "${label}" — falling back to the ` +
+          `built-in pattern rules. Reason: ${reason}`,
+        err,
+      );
+      if ((err as any)?.raw) {
+        group('parse', 'raw model output that could not be parsed', () => {
+          log('parse', preview((err as any).raw, 1200));
+        });
       }
       this.emitProgress({
         status: 'error',

@@ -4,6 +4,8 @@
  */
 
 import { AIGeneratedTrack, AITweakResult, AIExplanationResult, AIVariation } from '../types';
+import { composeTrack, PROCEDURAL_GENRES } from './proceduralComposer';
+import { log } from './diagnostics';
 
 export interface GenreTemplate {
   name: string;
@@ -321,6 +323,38 @@ export function generateHeuristicTrack(
     styleKey && GENRE_TEMPLATES[styleKey] ? styleKey : matchGenreByKeyword(p) || 'cyberpunk';
 
   const template = GENRE_TEMPLATES[matchedGenre] || GENRE_TEMPLATES.cyberpunk;
+
+  // Compose procedurally when we have a recipe for this genre, so repeated
+  // clicks give genuinely different rhythm and harmony rather than cycling
+  // two or three hardcoded strings. The curated templates stay as a fallback
+  // for genres without a recipe, and are occasionally used anyway so their
+  // hand-written character is not lost entirely.
+  const canCompose = PROCEDURAL_GENRES.includes(matchedGenre);
+  if (canCompose && Math.random() > 0.15) {
+    const composed = composeTrack(matchedGenre, tempo);
+    log('ai', `composed ${composed.genreLabel} — seed ${composed.seed}`, {
+      bpm: composed.bpm,
+      theory: composed.theory,
+    });
+    return {
+      title: composed.title,
+      bpm: composed.bpm,
+      genre: composed.genreLabel,
+      code: composed.code,
+      explanation: `${composed.description} ${composed.theory}`,
+      notationBreakdown: [
+        { symbolOrMethod: 'stack(...)', meaning: 'Plays every layer inside it at the same time.' },
+        { symbolOrMethod: '<a b c>', meaning: 'Steps to the next chord each cycle.' },
+        { symbolOrMethod: '(3,8)', meaning: 'Euclidean rhythm: 3 onsets spread over 8 steps.' },
+        { symbolOrMethod: '.lpf(hz)', meaning: 'Low-pass filter; lower values sound darker.' },
+      ],
+      liveTweaks: [
+        { label: 'Darker', code: composed.code.replace(/lpf\((\d+)\)/g, (_m, n) => `lpf(${Math.max(200, Math.round(Number(n) * 0.45))})`) },
+        { label: 'Brighter', code: composed.code.replace(/lpf\((\d+)\)/g, (_m, n) => `lpf(${Math.min(16000, Math.round(Number(n) * 2))})`) },
+      ],
+    };
+  }
+
   const pattern = template.patterns[Math.floor(Math.random() * template.patterns.length)];
 
   const finalBpm = tempo || template.defaultBpm;

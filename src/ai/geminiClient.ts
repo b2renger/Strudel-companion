@@ -27,6 +27,8 @@
  * and are gone: the first is shut down, the second is not a documented
  * endpoint.
  */
+import { log, error as logError, timer, group, preview, estimateTokens } from './diagnostics';
+
 export const GEMINI_MODEL_CHAIN = [
   'gemini-3.6-flash',
   'gemini-3.1-flash-lite',
@@ -106,11 +108,17 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
   for (let i = 0; i < GEMINI_MODEL_CHAIN.length; i++) {
     const model = GEMINI_MODEL_CHAIN[i];
     onAttempt?.(model, i, GEMINI_MODEL_CHAIN.length);
+    const t = timer('gemini', `${model} (attempt ${i + 1}/${GEMINI_MODEL_CHAIN.length})`);
+    if (i === 0) {
+      group('gemini', `request (~${estimateTokens(userPrompt + systemInstruction)} est. tokens)`, () => {
+        log('gemini', preview(userPrompt, 900));
+      });
+    }
 
     // Own timeout, linked to any caller-supplied cancellation.
-    const timer = new AbortController();
-    const timeoutId = setTimeout(() => timer.abort(), REQUEST_TIMEOUT_MS);
-    const onCallerAbort = () => timer.abort();
+    const timeoutCtl = new AbortController();
+    const timeoutId = setTimeout(() => timeoutCtl.abort(), REQUEST_TIMEOUT_MS);
+    const onCallerAbort = () => timeoutCtl.abort();
     signal?.addEventListener('abort', onCallerAbort);
 
     try {
@@ -121,11 +129,16 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
           'x-goog-api-key': apiKey,
         },
         body,
-        signal: timer.signal,
+        signal: timeoutCtl.signal,
       });
 
+      log('gemini', `HTTP ${res.status} from ${model}`);
       if (res.ok) {
         const data = await res.json();
+        const usage = data?.usageMetadata;
+        if (usage) {
+          log('gemini', `tokens in=${usage.promptTokenCount} out=${usage.candidatesTokenCount} total=${usage.totalTokenCount}`);
+        }
         const text: string =
           data?.candidates?.[0]?.content?.parts
             ?.map((p: any) => p?.text ?? '')
@@ -140,6 +153,8 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
               : 'Gemini returned an empty response.',
           );
         }
+        t.end(`${model} OK`);
+        group('gemini', 'raw response', () => log('gemini', preview(text, 1200)));
         return text;
       }
 
@@ -156,6 +171,7 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
         throw new GeminiError('bad-request', apiMessage || 'Gemini rejected the request.');
       }
       if (res.status === 401 || res.status === 403) {
+        logError('gemini', `${model} rejected the API key (HTTP ${res.status}). Check the key and its referrer restriction.`);
         throw new GeminiError(
           'auth',
           apiMessage ||
@@ -165,6 +181,7 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
       }
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get('Retry-After')) || undefined;
+        logError('gemini', `${model} rate-limited (429)${retryAfter ? `, retry after ${retryAfter}s` : ''} — trying the next model`);
         lastError = new GeminiError(
           'rate-limit',
           apiMessage ||

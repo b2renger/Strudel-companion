@@ -30,6 +30,12 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
     setPrompt(newPrompt);
   };
 
+  /** Surprise Me: fill the box AND generate, in one action. */
+  const handleSurprise = (newPrompt: string) => {
+    setPrompt(newPrompt);
+    onGenerate(newPrompt, selectedStyle, complexity);
+  };
+
   const handleAppendModifier = (modifier: string) => {
     setPrompt((prev) => {
       const trimmed = prev.trim();
@@ -184,6 +190,7 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
           <PromptSuggestionEngine
             currentPrompt={prompt}
             onSelectPrompt={handleSelectSuggestion}
+            onSurprise={handleSurprise}
             onAppendModifier={handleAppendModifier}
             isOpen={isSuggestionsOpen}
             onClose={() => setIsSuggestionsOpen(false)}

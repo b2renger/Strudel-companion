@@ -167,9 +167,13 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
     if (id === 'chrome-builtin') {
       return caps.chromeBuiltIn ? { ok: true } : { ok: false, reason: caps.chromeBuiltInReason };
     }
+    // Deliberately `ok: true` even with no key. Selecting this engine is what
+    // reveals the key field below, so gating selection on the key created a
+    // deadlock: no key meant the card was disabled, which meant the field
+    // never rendered, which meant a key could never be added.
     return caps.hasGeminiKey
       ? { ok: true }
-      : { ok: false, reason: 'Add your API key below to enable this engine.' };
+      : { ok: true, reason: 'Needs an API key — select this engine to add one.' };
   };
 
   /** Selecting an engine never starts a download — that needs its own click. */
@@ -362,7 +366,7 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
                     <div><dt className="inline font-bold">Privacy: </dt><dd className="inline">{engine.privacy}</dd></div>
                   </dl>
 
-                  {!avail.ok && avail.reason && (
+                  {avail.reason && (
                     <p className="mt-2 text-[10px] text-amber-800 flex items-start gap-1.5">
                       <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
                       <span>{avail.reason}</span>
@@ -447,7 +451,7 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
           )}
 
           {/* API key */}
-          {activeEngine === 'cloud-gemini' && (
+          {(activeEngine === 'cloud-gemini' || !caps.hasGeminiKey) && (
             <section className="space-y-2.5 border-t border-gray-200 pt-4">
               <h3 className="text-xs font-bold text-gray-900">Your Gemini API key</h3>
               <p className="text-[10px] text-gray-700">

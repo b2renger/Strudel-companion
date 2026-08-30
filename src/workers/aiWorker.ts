@@ -28,6 +28,7 @@ import {
 } from '../ai/outputParser';
 import { getModelSpec, DEFAULT_MODEL_ID } from '../ai/models';
 import { AIWorkerRequest, AIWorkerResponse } from '../types';
+import { log, error as logError, timer, group, preview, estimateTokens, fmtMs } from '../ai/diagnostics';
 
 let engine: MLCEngine | null = null;
 let loadedModelId: string | null = null;
@@ -68,6 +69,7 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
     // live engine leaks its GPU buffers (up to ~1.9 GB), which JS garbage
     // collection does not reliably reclaim.
     if (engine) {
+      log('worker', `unloading ${loadedModelId} to free GPU memory`);
       try {
         await engine.unload();
       } catch {
@@ -88,7 +90,16 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
       },
     });
 
+    const loadTimer = timer('worker', `download + compile ${modelId}`);
+    let lastPct = -1;
+
     const initProgressCallback = (report: InitProgressReport) => {
+      // web-llm's text carries the phase (fetching shards / loading GPU ...).
+      const pct = Math.round(report.progress * 100);
+      if (pct !== lastPct && pct % 5 === 0) {
+        lastPct = pct;
+        loadTimer.mark(`${pct}% — ${report.text}`);
+      }
       send({
         id: reqId,
         type: 'progress',
@@ -104,6 +115,7 @@ async function ensureEngine(modelId: string, reqId: string): Promise<void> {
 
     engine = await CreateMLCEngine(modelId, { initProgressCallback, logLevel: 'WARN' });
     loadedModelId = modelId;
+    loadTimer.end(`${modelId} resident in GPU memory`);
   })();
 
   try {
@@ -135,6 +147,20 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
       ] as any)
     : ([{ role: 'user', content: userPrompt }] as any);
 
+  group('worker', `prompt (${estimateTokens(userPrompt)} est. tokens, ${userPrompt.length} chars)`, () => {
+    log('worker', preview(userPrompt, 900));
+  });
+  if (estimateTokens(userPrompt) + maxTokens > (spec?.contextWindow ?? 4096)) {
+    logError(
+      'worker',
+      `Prompt (~${estimateTokens(userPrompt)} tokens) plus max_tokens (${maxTokens}) exceeds ` +
+        `this model's ${spec?.contextWindow ?? 4096}-token context window. Output will be truncated.`,
+    );
+  }
+
+  const genTimer = timer('worker', 'generating');
+  let tokenCount = 0;
+
   const stream = await engine.chat.completions.create({
     messages,
     // Low, because every task here is a strict-format task. 0.4 produced
@@ -156,6 +182,8 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
     if (choice?.finish_reason) finishReason = choice.finish_reason;
 
     // Throttled, so token streaming does not flood the main thread.
+    if (delta) tokenCount++;
+
     const now = Date.now();
     if (now - lastEmit > 120) {
       lastEmit = now;
@@ -171,7 +199,15 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
     }
   }
 
+  const ms = genTimer.end(
+    `generated ${tokenCount} chunks / ${text.length} chars` +
+      (finishReason ? ` (finish_reason=${finishReason})` : ''),
+  );
+  log('worker', `throughput ≈ ${(tokenCount / (ms / 1000)).toFixed(1)} chunks/s over ${fmtMs(ms)}`);
+  group('worker', 'raw completion', () => log('worker', preview(text, 1200)));
+
   if (finishReason === 'length') {
+    logError('worker', `Output hit the ${maxTokens}-token cap and was cut off mid-answer.`);
     throw new Error(
       'The model hit its output limit before finishing the pattern. Try a shorter pattern, ' +
         'a simpler request, or a larger model.',
@@ -188,6 +224,7 @@ async function complete(reqId: string, userPrompt: string, maxTokens: number): P
 self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
   const { id, type, modelId, payload } = e.data;
   const targetModel = modelId || loadedModelId || DEFAULT_MODEL_ID;
+  log('worker', `← ${type}`, { id, targetModel, loaded: loadedModelId ?? 'none' });
 
   try {
     switch (type) {
@@ -275,6 +312,7 @@ self.onmessage = async (e: MessageEvent<AIWorkerRequest>) => {
         send({ id, type: 'error', error: `Unknown worker action: ${type}` });
     }
   } catch (err: any) {
+    logError('worker', `${type} failed: ${err?.message ?? err}`, err);
     send({ id, type: 'error', error: err?.message || 'The local model failed to respond.' });
   }
 };

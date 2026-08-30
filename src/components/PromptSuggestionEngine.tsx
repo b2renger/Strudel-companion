@@ -249,6 +249,8 @@ export const QUICK_ADD_MODIFIERS = [
 interface PromptSuggestionEngineProps {
   currentPrompt: string;
   onSelectPrompt: (newPrompt: string) => void;
+  /** Generate immediately with this prompt. Falls back to onSelectPrompt. */
+  onSurprise?: (newPrompt: string) => void;
   onAppendModifier: (modifier: string) => void;
   isOpen: boolean;
   onClose: () => void;
@@ -257,6 +259,7 @@ interface PromptSuggestionEngineProps {
 export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
   currentPrompt,
   onSelectPrompt,
+  onSurprise,
   onAppendModifier,
   isOpen,
   onClose,
@@ -306,15 +309,15 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
       'with 4-on-the-floor kick and skippy syncopation',
       'with half-time trap snare drops and alternating hi-hat rolls',
       'with polymetric 3-against-4 cross-rhythms',
-      'with syncopated cabasa shaker and percussive rim clicks',
+      'with syncopated shaker and percussive rim clicks',
       'with broken Amen break chopped rolls and crash cymbals',
     ];
     const synths = [
-      'warm Rhodes electric piano chords and sub bass',
+      'warm rhodes electric piano chords and sub bass',
       'resonant squelchy sawtooth synth arpeggios',
-      'lush supersaw pads and analog pluck lead',
-      'deep FM bells and evolving sub drone',
-      'delicate acoustic Koto plucks and singing bowl resonance',
+      'lush detuned sawtooth pads and plucked lead',
+      'bell-like piano tones and an evolving sine sub drone',
+      'delicate plucked koto lines and sine bowl resonance',
       'bouncy square wave 8-bit arpeggios and punchy bass',
       'minor 11th jazz piano voicings and walking bass',
     ];
@@ -332,7 +335,16 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
     const randomFx = fx[Math.floor(Math.random() * fx.length)];
 
     const generated = `${randomGenre} featuring ${randomSynth} ${randomRhythm} ${randomFx}`;
-    onSelectPrompt(generated);
+
+    // Hand it straight to the active AI engine when the parent supports it.
+    // "Surprise me" that only fills a text box and waits for another click is
+    // not a surprise; it is homework.
+    if (onSurprise) {
+      onSurprise(generated);
+      onClose();
+    } else {
+      onSelectPrompt(generated);
+    }
   };
 
   // Keyboard navigation
