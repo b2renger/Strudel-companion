@@ -52,11 +52,19 @@ if (!existsSync(manifestPath)) {
     if (!existsSync(file)) fail(`manifest names ${icon.src} but it is not in the build`);
   }
 
-  // `id` is resolved against the ORIGIN, not the manifest URL, so a relative
-  // "." claims the whole origin — on GitHub Pages that is the account root,
-  // shared with every other project page.
-  if (m.id === '.' || m.id === './' || m.id === '/') {
-    fail(`manifest id "${m.id}" resolves to the origin root and will collide with other apps there`);
+  // `id` is resolved against the ORIGIN, not the manifest URL. A relative "."
+  // therefore claims the whole origin — on GitHub Pages that is the account
+  // root, shared with every other project page that user publishes.
+  //
+  // `/` is only wrong when the app does NOT live at the origin root. A custom
+  // domain or a local build genuinely is the origin root, and there `id: "/"`
+  // is both correct and the only sensible value — so this keys off the scope
+  // rather than the literal.
+  const atOriginRoot = (m.scope ?? '/') === '/';
+  if (m.id === '.' || m.id === './') {
+    fail(`manifest id "${m.id}" is relative — it resolves against the ORIGIN, not the manifest URL`);
+  } else if (m.id === '/' && !atOriginRoot) {
+    fail(`manifest id "/" claims the origin root while the app is scoped to "${m.scope}"`);
   }
   if (m.scope && m.id && !String(m.id).startsWith(String(m.scope))) {
     fail(`manifest id "${m.id}" is outside scope "${m.scope}"`);
