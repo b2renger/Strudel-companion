@@ -403,10 +403,26 @@ export default function App() {
       const tweaked = result.data;
       setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
       if (tweaked && tweaked.code) {
+        // A tweak that changes nothing is reported as changing nothing.
+        //
+        // Models restate the current pattern before answering, and if the
+        // reply is cut off before the real answer arrives, what comes back is
+        // the pattern that went in — while the summary confidently describes
+        // an edit. The parser now prefers the LAST code block for exactly this
+        // reason, but the buffer being byte-identical is the ground truth, so
+        // it is checked here as well.
+        const unchanged = tweaked.code.trim() === code.trim();
+        if (unchanged) {
+          logEvent('ai', `TWEAK MADE NO CHANGE — the model returned the pattern unmodified`);
+        }
         setCodeBeforeAI(code);
         setCode(tweaked.code);
         setLastTweakDiffs(
-          tweaked.diffHighlights?.length ? tweaked.diffHighlights : [tweaked.summary],
+          unchanged
+            ? ['The model returned the pattern unchanged — nothing was modified.']
+            : tweaked.diffHighlights?.length
+              ? tweaked.diffHighlights
+              : [tweaked.summary],
         );
 
         // Evaluate updated code live
@@ -537,10 +553,18 @@ export default function App() {
         // buffer and cleared the error unconditionally, so a bad "fix" left
         // the user with unusable code, no error to explain it, and no undo.
         if (evalRes.success) {
+          const unchanged = fixed.fixedCode.trim() === code.trim();
+          if (unchanged) {
+            logEvent('ai', 'FIX MADE NO CHANGE — the model returned the pattern unmodified');
+          }
           setCodeBeforeAI(code);
           setCode(fixed.fixedCode);
           setErrorMessage(null);
-          setLastTweakDiffs([fixed.fixExplanation || fixed.reason]);
+          setLastTweakDiffs([
+            unchanged
+              ? 'The model returned the pattern unchanged — nothing was fixed.'
+              : fixed.fixExplanation || fixed.reason,
+          ]);
           audioEngine.play();
           setIsPlaying(true);
         } else {

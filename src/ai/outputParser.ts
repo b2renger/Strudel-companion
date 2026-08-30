@@ -121,6 +121,22 @@ function endsInsideLineComment(text: string): boolean {
 }
 
 /**
+ * True when the final `//` comment contains a closing bracket that nothing
+ * inside the comment opened — the signature of a bracket eaten from the code.
+ */
+function endsWithSwallowedBracket(original: string): boolean {
+  const idx = original.lastIndexOf('//');
+  if (idx === -1) return false;
+
+  let depth = 0;
+  for (const c of original.slice(idx)) {
+    if (c === '(') depth++;
+    else if (c === ')' && --depth < 0) return true;
+  }
+  return false;
+}
+
+/**
  * Recovers the one case where a trailing comment swallowed the closing bracket.
  *
  * Gemini returned this verbatim, all on one line:
@@ -164,14 +180,16 @@ function sliceClosingComments(text: string, original: string): string | null {
   // (1) an unterminated fence means the reply was cut off.
   if ((original.match(/```/g) || []).length % 2 === 1) return null;
 
-  // (2) the trailing comment must actually CONTAIN a closing bracket — which
-  //     is the entire premise: the comment ate it. A model cut off while
-  //     writing a comment also ends inside one, but its half-written sentence
-  //     ("// now add the sub bass under") has no bracket in it. Without this,
-  //     a truncated reply lost the very layer the user had asked for and was
-  //     still reported as a successful edit.
-  const lastComment = original.slice(original.lastIndexOf('//'));
-  if (!lastComment.includes(')')) return null;
+  // (2) the trailing comment must contain an UNMATCHED closing bracket. That
+  //     is the entire premise — the comment ate a bracket belonging to the
+  //     code, so inside the comment it has no opener.
+  //
+  //     "contains a )" was not enough: `// euclid (7,16) hats` has one, and so
+  //     does any comment quoting a pattern, so a reply cut off while writing
+  //     such a comment sailed through and lost the layer the user had asked
+  //     for. A balanced pair inside the comment is the comment's own text; an
+  //     unbalanced closer is the code's.
+  if (!endsWithSwallowedBracket(original)) return null;
 
   const m = PATTERN_START.exec(text);
   if (!m) return null;
@@ -254,10 +272,18 @@ export function extractCodeBlock(text: string): string | null {
 
   const candidates: string[] = [];
 
-  // Closed fences, with any language tag or none.
-  for (const m of text.matchAll(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/g)) {
-    if (m[1]?.trim()) candidates.push(m[1]);
-  }
+  // Closed fences, with any language tag or none — LAST FIRST.
+  //
+  // The tweak, fix and variation prompts all quote the user's current pattern
+  // in a ```strudel block, and small models routinely restate it before
+  // answering. Taking the first block therefore returned the ORIGINAL pattern:
+  // the editor was set to what it already said, the summary claimed a specific
+  // edit, and nothing reported that the real answer had been thrown away. The
+  // answer always comes last in every contract in prompts.ts.
+  const fenced = [...text.matchAll(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((body) => body?.trim());
+  candidates.push(...fenced.reverse());
 
   // An unterminated fence. Common, and not by itself a failure — small models
   // routinely forget the closing fence on an otherwise complete answer.
@@ -358,16 +384,32 @@ export function extractJsonFromOutput<T = any>(text: string): T | null {
   const last = trimmed.lastIndexOf('}');
   if (first !== -1 && last > first) candidates.push(trimmed.substring(first, last + 1));
 
+  // Only a plain object counts.
+  //
+  // `jsonrepair` does not fail on "Here is the JSON: {...} Done." — it wraps
+  // the prose and the object into an ARRAY, which parses. Returning the first
+  // thing that parses therefore handed back `["Here is the JSON:", {…}]`,
+  // whose `.code` is undefined, and the brace-substring candidate that would
+  // have parsed correctly was never reached. A complete, valid Gemini reply
+  // with one sentence around it came back as "did not return a usable
+  // pattern" — a working engine looking broken.
+  const isObject = (v: unknown): boolean =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+
   for (const candidate of candidates) {
-    try {
-      return JSON.parse(candidate) as T;
-    } catch {
-      /* try the repair pass below */
-    }
-    try {
-      return JSON.parse(jsonrepair(candidate)) as T;
-    } catch {
-      /* try the next candidate */
+    for (const attempt of [() => JSON.parse(candidate), () => JSON.parse(jsonrepair(candidate))]) {
+      try {
+        const parsed = attempt();
+        if (isObject(parsed)) return parsed as T;
+        // An array almost always means a repaired prose-plus-object reply; the
+        // object itself is usually in there, so take it rather than give up.
+        if (Array.isArray(parsed)) {
+          const inner = parsed.find(isObject);
+          if (inner) return inner as T;
+        }
+      } catch {
+        /* try the next attempt, then the next candidate */
+      }
     }
   }
   return null;

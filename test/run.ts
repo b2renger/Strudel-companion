@@ -903,6 +903,128 @@ test('a unit is not read as a tempo', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The truncation invariant.
+//
+// For every prefix of a complete reply, parsing must either return exactly the
+// code the whole reply gives, or throw. Anything else means a cut-off answer
+// was accepted as a finished one — which reaches the user as their working
+// pattern being overwritten by a fragment, reported as success.
+//
+// Three separate rounds of review each found a hole in this by hand. Checking
+// every prefix of every shape catches the next one automatically.
+// ---------------------------------------------------------------------------
+
+test('no prefix of a reply is ever accepted as a different, complete pattern', () => {
+  const F = '`' + '`' + '`';
+  const PATTERN = 'stack(\n  s("bd*4").gain(0.95),\n  s("~ cp ~ cp"),\n  s("hh(7,16)").gain(0.55)\n)';
+  const ONE_LINE = 'stack(s("bd*4").gain(0.8), s("hh(5,8)").gain(0.5), s("cp*2"))';
+
+  const shapes: Array<[string, string]> = [
+    ['fenced', `${F}strudel\n${PATTERN}\n${F}\nSUMMARY: done.`],
+    ['fenced, no tag', `${F}\n${PATTERN}\n${F}\nSUMMARY: done.`],
+    ['unfenced', `${PATTERN}\nSUMMARY: done.`],
+    ['prose then fence', `Sure! Here you go.\n${F}strudel\n${PATTERN}\n${F}\nSUMMARY: done.`],
+    ['unterminated fence', `${F}strudel\n${PATTERN}\nSUMMARY: done.`],
+    ['CRLF', `${F}strudel\r\n${PATTERN.replace(/\n/g, '\r\n')}\r\n${F}\r\nSUMMARY: done.`],
+    ['bare retry code', PATTERN],
+    ['one line', ONE_LINE],
+    ['comment on each layer', `stack(\n  s("bd*4"), // the kick (4 to the floor)\n  s("hh*8") // euclid (7,16) hats\n)`],
+    ['one line + comments', 'stack(s("bd*4").gain(0.8), // tip one. s("hh(5,8)").gain(0.5) // tip two.)'],
+    ['json', `{"code":${JSON.stringify(PATTERN)},"summary":"done","title":"A","bpm":130,"genre":"T","explanation":"e"}`],
+    ['json in a fence', `${F}json\n{"code":${JSON.stringify(PATTERN)},"summary":"done","title":"A","bpm":130,"genre":"T","explanation":"e"}\n${F}`],
+    ['json with prose', `Here it is:\n{"code":${JSON.stringify(PATTERN)},"summary":"done","title":"A","bpm":130,"genre":"T","explanation":"e"}\nDone.`],
+  ];
+
+  const recipe = { type: 'drop', title: 'D', description: 'd' };
+  const parsers: Array<[string, (raw: string) => { code: string }]> = [
+    ['parseTweakResult', parseTweakResult],
+    ['parseGeneratedTrack', (raw) => parseGeneratedTrack(raw)],
+    ['parseVariationResult', (raw) => parseVariationResult(raw, recipe)],
+  ];
+
+  const leaks: string[] = [];
+  let checked = 0;
+  let combos = 0;
+
+  for (const [shapeName, full] of shapes) {
+    for (const [parserName, parse] of parsers) {
+      let whole: string;
+      try {
+        whole = parse(full).code;
+        combos++;
+      } catch (err: any) {
+        leaks.push(`${shapeName} / ${parserName}: the COMPLETE reply was rejected (${err.message})`);
+        continue;
+      }
+      for (let i = 1; i < full.length; i++) {
+        checked++;
+        let got: string;
+        try {
+          got = parse(full.slice(0, i)).code;
+        } catch {
+          continue; // rejecting a prefix is always correct
+        }
+        if (got !== whole) {
+          leaks.push(
+            `${shapeName} / ${parserName}: prefix of ${i} chars accepted as a different pattern\n` +
+              `      cut at: ${JSON.stringify(full.slice(Math.max(0, i - 40), i))}\n` +
+              `      gave:   ${JSON.stringify(got)}`,
+          );
+          break; // one report per shape/parser is enough
+        }
+      }
+    }
+  }
+
+  // Guards against the test silently doing nothing if a shape stops parsing.
+  assert.equal(leaks.length, 0, `\n    ${leaks.join('\n    ')}`);
+  assert.equal(combos, shapes.length * parsers.length, 'a shape/parser pair did not run');
+  assert.ok(checked > 4000, `only ${checked} prefixes checked`);
+});
+
+test('a comment may only close a bracket it did not open', () => {
+  // "contains a )" was not a strong enough premise: `// euclid (7,16) hats`
+  // has one, so a reply cut off while writing such a comment was closed up and
+  // handed over as a finished edit.
+  for (const cut of [
+    'stack(s("bd*4").gain(0.8), // TIP: swap bd. s("hh(5,8)")',
+    'stack(\n  s("bd*4"),\n  s("hh*8") // euclid (7,16) hats',
+    'stack(s("bd*4"), s("~ cp"), // hats: euclid (7,16) then the sub, s("hh(7,16)").gain(0.55)',
+  ]) {
+    assert.throws(() => parseTweakResult(cut), AIParseError, `accepted: ${cut}`);
+  }
+  // The genuine swallowed bracket — unmatched inside the comment — still works.
+  const genuine = 'stack(s("bd*4").gain(0.8), // tip one. s("hh(5,8)").gain(0.5) // tip two.)';
+  assert.ok(parseTweakResult(genuine).code.includes('hh(5,8)'));
+});
+
+test('when a model echoes the pattern first, the ANSWER is taken', () => {
+  // The tweak, fix and variation prompts all quote the current pattern in a
+  // fenced block, and models restate it constantly. Taking the first block set
+  // the editor to what it already said while the summary claimed an edit.
+  const F = '`' + '`' + '`';
+  const echoed =
+    `The current pattern is:\n${F}strudel\nstack(\n  s("bd*4"),\n  s("hh*8")\n)\n${F}\n` +
+    `Here is the updated one:\n${F}strudel\nstack(\n  s("bd*4").gain(0.95),\n  s("~ cp ~ cp")\n)\n${F}\n` +
+    'SUMMARY: raised the hats.';
+  const got = parseTweakResult(echoed).code;
+  assert.ok(got.includes('~ cp ~ cp'), `took the echoed original: ${got}`);
+});
+
+test('a valid JSON reply survives prose around it', () => {
+  // jsonrepair turns "Here is the JSON: {...} Done." into an ARRAY, which
+  // parses — so the first-thing-that-parses rule returned the array, its
+  // `.code` was undefined, and a working engine reported "did not return a
+  // usable pattern".
+  const prosey =
+    'Here is the JSON:\n' +
+    '{"code":"stack(\\n  s(\\"bd*4\\")\\n)","title":"A","bpm":138,"genre":"T",' +
+    '"explanation":"e","summary":"s"}\nDone.';
+  assert.ok(parseTweakResult(prosey).code.includes('bd*4'));
+  assert.equal(parseGeneratedTrack(prosey).bpm, 138);
+});
+
+// ---------------------------------------------------------------------------
 
 await runAll();
 

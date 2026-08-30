@@ -180,6 +180,38 @@ Generation also stops as soon as the answer is structurally complete
 (`completionIsDone`). Small models do not reliably stop after a strict-format
 answer — they start a second pattern, or explain themselves, until the cap.
 
+### The truncation invariant, and the test that enforces it
+
+For every prefix of a complete reply, parsing must either return exactly the
+code the whole reply gives, or throw. Nothing in between.
+
+Violating it is the worst failure this codebase has: a cut-off answer accepted
+as a finished one reaches the user as their working pattern being overwritten
+by a fragment, reported as a successful edit. Cloud and Nano do not report a
+`finish_reason`, so nothing else would notice.
+
+Three separate review rounds each found a hole in this by hand, in three
+different places — a bracket recovery guarded only by "the text contained a
+`//`"; a `|| json.code.trim()` fallback that shipped what `jsonrepair` had
+closed up; and a comment-must-contain-a-bracket rule that `// euclid (7,16)
+hats` satisfies. There is now a test that slices every reply shape at every
+character position and checks the invariant on all three parsers — roughly
+4,400 prefixes across 39 shape/parser pairs. Keep it green; it is the only
+thing here that finds the next one automatically.
+
+Two rules follow from the same reasoning and are load-bearing:
+
+- **A comment may only be credited with closing a bracket it did not open.**
+  The recovery for "the trailing comment swallowed the `)`" exists for a real
+  Gemini reply, but a model cut off mid-comment also ends inside one. The
+  discriminator is that the genuine case leaves an *unmatched* closer in the
+  comment; a balanced `(7,16)` is the comment's own text.
+- **The last fenced block wins, not the first.** Every tweak, fix and variation
+  prompt quotes the user's current pattern in a fence, and models restate it
+  before answering. Taking the first block set the editor to what it already
+  said while the summary described an edit that had been discarded. `App.tsx`
+  additionally reports a tweak whose result is byte-identical to its input.
+
 ### The system prompt travels in the system channel only
 
 Every prompt builder returns the **task**. It does not prepend
