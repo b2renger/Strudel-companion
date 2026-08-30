@@ -106,6 +106,10 @@ for (const [name, size, inset] of [
   // Maskable icons are cropped to a circle on some launchers, so the artwork
   // has to sit inside the middle 80%.
   ['icon-maskable-512.png', 512, 0.26],
+  // iOS ignores the manifest and reads <link rel="apple-touch-icon">. It also
+  // does not honour `purpose: maskable`, so this one is drawn with the padding
+  // baked in and 180 is the size Safari actually asks for.
+  ['apple-touch-icon-180.png', 180, 0.18],
   ['favicon-32.png', 32, 0.12],
 ]) {
   writeFileSync(join(OUT, name), drawIcon(size, inset));

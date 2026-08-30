@@ -68,6 +68,7 @@ const TAG_COLOURS: Record<string, string> = {
   audio: '#db2777',
   cache: '#4f46e5',
   parse: '#65a30d',
+  pwa: '#0d9488',
 };
 
 function stamp(tag: string): [string, string] {

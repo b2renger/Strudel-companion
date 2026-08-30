@@ -4,6 +4,7 @@ import { PatternVisualizer } from './components/PatternVisualizer';
 import { CodeEditor } from './components/CodeEditor';
 import { AIPromptBar } from './components/AIPromptBar';
 import { AILiveCopilot } from './components/AILiveCopilot';
+import { PwaControls } from './components/PwaControls';
 import { LineByLineBreakdown } from './components/LineByLineBreakdown';
 import { NotationGuide } from './components/NotationGuide';
 import { PresetSelectorModal } from './components/PresetSelectorModal';
@@ -106,6 +107,20 @@ export default function App() {
     if (loaded.length > 0 && loaded[0].variations) {
       setVariations(loaded[0].variations);
     }
+  }, []);
+
+  // Manifest shortcuts (long-press the icon on Android, right-click the
+  // taskbar icon on desktop) launch the app with `?view=…`. The query is
+  // consumed and stripped so a reload does not reopen the modal.
+  useEffect(() => {
+    const view = new URLSearchParams(window.location.search).get('view');
+    if (!view) return;
+    logEvent('user', `LAUNCHED from a shortcut — view=${view}`);
+    if (view === 'guide') setIsGuideOpen(true);
+    if (view === 'sessions') setIsSessionsOpen(true);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('view');
+    window.history.replaceState({}, '', url.toString());
   }, []);
 
   // A failure that happens AFTER evaluation — the scheduler throwing mid-cycle,
@@ -955,6 +970,9 @@ export default function App() {
         onClose={() => setIsGuideOpen(false)}
         onInsertSnippet={handleInsertSnippet}
       />
+
+      {/* Install offer, update offer and offline indicator. */}
+      <PwaControls />
 
       {/* Studio Footer */}
       <footer className="mt-auto border-t border-gray-200 bg-gray-100 py-2.5 px-4 text-[10px] font-mono text-gray-500">

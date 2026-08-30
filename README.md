@@ -259,6 +259,30 @@ ones get the amber "Silent:" strip.
 
 ---
 
+## Installing it
+
+The studio is a progressive web app, so it can be installed on a desktop or a
+phone and run in its own window with no browser chrome.
+
+- **Desktop Chrome / Edge** — an install icon appears in the address bar, or use
+  the "Install for offline use" pill at the bottom of the page. Right-clicking
+  the installed icon gives shortcuts straight to the notation guide and your
+  saved sessions.
+- **Android Chrome** — same pill, or "Add to Home screen" in the browser menu.
+- **iPhone / iPad** — Safari has no install API, so tap the pill's **How**
+  button for the Share → Add to Home Screen steps. It must be Safari; Chrome
+  and Firefox on iOS cannot install web apps.
+
+Once installed it starts with no network, keeps your saved sessions, and reuses
+any model weights already downloaded.
+
+**Updates never interrupt a set.** A new version is downloaded in the
+background and waits; you get a "A new version is ready" prompt and reload when
+it suits you. Your pattern is not saved automatically, so save first if you
+care about it.
+
+---
+
 ## Offline
 
 - The app shell is precached by a service worker, so reloading with no network

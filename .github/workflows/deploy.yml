@@ -48,6 +48,13 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
+      # Every way a PWA fails to be installable is silent — a manifest with no
+      # icons, an id that collides with another app on the origin, an icon the
+      # precache missed. Nothing errors; the install button simply never
+      # appears. Checked here so a broken one cannot reach the site.
+      - name: Verify the PWA is installable
+        run: npm run verify:pwa
+
       # GitHub Pages serves the 404 page for unknown paths. Giving it the SPA
       # shell means a deep link or a refresh loads the app instead of a 404.
       - name: Add SPA fallback

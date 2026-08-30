@@ -22,7 +22,26 @@
     <!-- Relative, not root-absolute: the site is served from a project path
          on GitHub Pages, so /favicon-32.png would 404. -->
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
-    <link rel="apple-touch-icon" href="icon-192.png" />
+
+    <!--
+      iOS ignores the web app manifest entirely. Installation there is Share ->
+      Add to Home Screen, and everything about how the installed app looks is
+      controlled by these four tags instead.
+
+      `apple-touch-icon` must be its own square PNG: iOS does not read the
+      manifest's icons and does not honour `purpose: maskable`, so the padding
+      is baked into this file.
+
+      `status-bar-style: black-translucent` puts the page under the status bar,
+      which is why `viewport-fit=cover` is on the viewport above and the layout
+      pads with `env(safe-area-inset-*)`. Without those two the header would sit
+      beneath the clock and the notch.
+    -->
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Strudel AI" />
   </head>
   <body class="antialiased">
     <div id="root"></div>

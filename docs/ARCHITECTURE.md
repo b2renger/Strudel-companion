@@ -311,6 +311,52 @@ render an enabled button reading "about 0 MB" in the window before the async
 probe resolved, which is reachable simply by reloading with the local engine
 remembered and opening the panel.
 
+### Installing it, and updating it without interrupting a set
+
+The app is installable on desktop and mobile. Three decisions are load-bearing.
+
+**Updates wait for the user.** The service worker was registered with
+`registerType: 'autoUpdate'`, which is `skipWaiting` + `clientsClaim`: a newly
+installed worker takes control of the *open* page immediately, while that page
+is still running the previous bundle. Its lazily imported chunks — the 362 kB
+`@strudel/transpiler`, fetched the first time a pattern is validated — are
+addressed by a content hash the new precache no longer holds. Deploying while
+somebody was playing could silently drop their validation to structural-only.
+It is now `prompt`: the new version waits, `PwaControls` offers it, and the
+user reloads when they are between patterns rather than mid-set.
+
+Because we register the worker ourselves in `src/pwa.ts` (to receive the update
+and offline callbacks), `injectRegister` is `null`. Leaving it on would
+register the worker twice.
+
+**Installation is offered differently per browser.** Chromium fires
+`beforeinstallprompt`, which must be captured, cannot be replayed outside a
+user gesture, and is single-use. Safari fires nothing and exposes no API at
+all, so on iOS the only honest thing is to show the Share → Add to Home Screen
+steps. `pwa.ts` resolves this to one of `prompt` / `ios-manual` / `installed` /
+`unavailable`, and re-resolves it when `beforeinstallprompt` or `appinstalled`
+arrives — both can fire well after load.
+
+**`id` is derived from `base`, and that matters more than it looks.** Unlike
+every other URL member, `id` resolves against the manifest's *origin* rather
+than its URL. Writing `id: '.'` therefore claims `https://<user>.github.io/` —
+the account root, shared by every project page that user publishes — so two of
+this owner's PWAs would install as the same app.
+
+iOS ignores the manifest entirely: the installed appearance comes from the
+`apple-*` meta tags in `index.html`, and `apple-touch-icon` must be its own
+square PNG because iOS does not honour `purpose: maskable`. With
+`status-bar-style: black-translucent` the page runs *under* the status bar,
+which is why the viewport is `viewport-fit=cover` and the layout pads with
+`env(safe-area-inset-*)`. Without both, the header sits beneath the clock and
+the bottom of the editor hides behind the home indicator.
+
+`npm run verify:pwa` checks the built output against what a browser actually
+requires. It exists because every one of these failures is silent — a manifest
+with no icons does not error anywhere, Chrome simply never offers to install,
+and you find out when a user says there is no install button. The deploy
+workflow runs it before publishing.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -322,7 +368,17 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] `npm run build` succeeds and `dist/` contains hashed assets
 - [ ] Deployed site loads at the project path (not just at `/`)
 - [ ] Reload with the network disabled still loads the app
-- [ ] The install prompt appears (needs the manifest icons)
+- [ ] `npm run verify:pwa` passes after a build
+- [ ] Desktop Chrome offers to install; the installed window opens standalone
+- [ ] Android Chrome installs, and long-pressing the icon shows both shortcuts
+- [ ] iOS Safari: the Install pill shows the Share-sheet steps, not a button
+- [ ] Installed on iPhone, the header clears the notch and the transport clears
+      the home indicator
+- [ ] Deploying while the app is open shows "A new version is ready" rather
+      than swapping chunks underneath it
+- [ ] Turning off the network shows the offline pill, and playback continues
+- [ ] Clicking the taskbar icon focuses the open window instead of opening a
+      second one (launch_handler)
 - [ ] `caches.keys()` shows no `model-weights` after loading a model
 
 **Engines**

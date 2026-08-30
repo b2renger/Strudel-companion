@@ -39,7 +39,23 @@ export default defineConfig(() => {
        * page even when a model was already downloaded and ready.
        */
       VitePWA({
-        registerType: 'autoUpdate',
+        /*
+         * 'prompt', not 'autoUpdate'.
+         *
+         * autoUpdate is skipWaiting + clientsClaim: a newly installed worker
+         * takes control of the OPEN page immediately, while that page is still
+         * running the previous bundle. Its lazily imported chunks — the 362 kB
+         * `@strudel/transpiler`, fetched the first time a pattern is validated
+         * — are addressed by a content hash the new precache no longer holds,
+         * so deploying mid-session could silently drop a live user's
+         * validation to structural-only. The update now waits until the user
+         * accepts it (see src/pwa.ts and PwaControls).
+         */
+        registerType: 'prompt',
+        // Registration is ours, in src/pwa.ts, so that update and offline
+        // callbacks have somewhere to go. Leaving this on would register the
+        // worker twice.
+        injectRegister: null,
         manifest: {
           name: 'Strudel AI Live Studio',
           short_name: 'Strudel AI',
@@ -50,6 +66,42 @@ export default defineConfig(() => {
           display: 'standalone',
           orientation: 'any',
           start_url: '.',
+          // Derived from `base`, NOT written as '.'.
+          //
+          // Unlike every other URL member, `id` is resolved against the
+          // manifest's ORIGIN rather than the manifest's URL, so '.' would
+          // claim `https://<user>.github.io/` — the account root, shared by
+          // every project page that user publishes. Two of this owner's PWAs
+          // would then be the same installed app. Using `base` keeps the
+          // identity unique per deployment and still correct for a fork under
+          // a different repository name.
+          id: base,
+          lang: 'en',
+          dir: 'ltr',
+          categories: ['music', 'entertainment', 'productivity'],
+          // minimal-ui is the fallback for browsers that will not do
+          // standalone; both are better than dropping to a full browser tab.
+          display_override: ['standalone', 'minimal-ui'],
+          // The app holds an AudioContext and, with a local model, up to ~1.9GB
+          // of GPU memory. Launching a second window instead of focusing the
+          // open one would duplicate both.
+          launch_handler: { client_mode: 'navigate-existing' },
+          // Long-press on Android, right-click the taskbar icon on desktop.
+          // Both land on the same page with a query the app reads on boot.
+          shortcuts: [
+            {
+              name: 'Mini-notation guide',
+              short_name: 'Guide',
+              description: 'Open the TidalCycles mini-notation reference',
+              url: '?view=guide',
+            },
+            {
+              name: 'Saved sessions',
+              short_name: 'Sessions',
+              description: 'Open your saved patterns and variations',
+              url: '?view=sessions',
+            },
+          ],
           // Chrome will not offer to install a site without a >=192px icon,
           // so without these the app could not go on a home screen at all —
           // on the platform its offline support exists for. Paths are
@@ -67,7 +119,13 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          // No `webmanifest` here: vite-plugin-pwa precaches the manifest and
+          // the icons it names by itself, and listing it again produced a
+          // duplicate entry in the precache manifest.
           globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+          // A deep link or a refresh must resolve to the app shell offline,
+          // the same way the deploy workflow's 404.html handles it online.
+          navigateFallback: 'index.html',
           // Keep the ~6 MB web-llm worker OUT of the precache. Precaching it
           // would make every first-time visitor download 6 MB before doing
           // anything, on a page whose whole premise is that choosing an engine
