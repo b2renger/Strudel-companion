@@ -100,6 +100,7 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
   const [keyNotice, setKeyNotice] = useState<string | null>(null);
   const [cacheNote, setCacheNote] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const keyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsubEngine = aiManager.onEngineChange(setActiveEngine);
@@ -179,6 +180,14 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
   /** Selecting an engine never starts a download — that needs its own click. */
   const handleSelectEngine = async (engine: AIEngineType) => {
     await aiManager.setEngine(engine);
+    // Choosing Gemini without a key should land the caret in the key field,
+    // not leave the user hunting for it further down the panel.
+    if (engine === 'cloud-gemini' && !getApiKey()) {
+      requestAnimationFrame(() => {
+        keyInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        keyInputRef.current?.focus();
+      });
+    }
   };
 
   const handleSelectModel = async (modelId: string) => {
@@ -229,6 +238,90 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
     );
   };
 
+
+  /**
+   * The API-key form.
+   *
+   * Rendered at the TOP of the dialog when no key is stored, because sitting
+   * below four engine cards in a scrolling panel made it effectively invisible
+   * — users reported being unable to find where to paste a key at all. Once a
+   * key exists it moves down with the other settings, where it belongs.
+   */
+  const apiKeySection = (highlight: boolean) => (
+    <section
+      className={
+        highlight
+          ? 'rounded-xl border-2 border-emerald-500 bg-emerald-50/60 p-3.5 space-y-2.5'
+          : 'space-y-2.5 border-t border-gray-200 pt-4'
+      }
+    >
+                          <h3 className="text-xs font-bold text-gray-900">Your Gemini API key</h3>
+              <p className="text-[10px] text-gray-700">
+                Create a free key in Google AI Studio, then paste it here. It is stored only in
+                this browser and sent only to Google.{' '}
+                <strong>
+                  Restrict the key to this site by HTTP referrer — anyone with the key can spend
+                  your quota.
+                </strong>
+              </p>
+              <a
+                href="https://aistudio.google.com/apikey"
+                target="_blank"
+                rel="noreferrer noopener"
+                className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 hover:underline min-h-11"
+              >
+                Get a free API key <ExternalLink className="w-3 h-3" />
+              </a>
+
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <label htmlFor="gemini-key" className="sr-only">
+                    Gemini API key
+                  </label>
+                  <input
+                    id="gemini-key"
+                    ref={keyInputRef}
+                    type={showKey ? 'text' : 'password'}
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                    placeholder="Paste your API key"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full min-h-11 rounded-lg border border-gray-300 px-3 pr-11 text-xs text-gray-900 focus:border-emerald-500 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5 text-gray-500 hover:text-gray-900"
+                  >
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <button
+                  onClick={handleSaveKey}
+                  className="min-h-11 px-4 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700"
+                >
+                  Save
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={handleForgetKey}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-gray-700 hover:text-red-700 min-h-11"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Forget my key
+                </button>
+                {keyNotice && <span className="text-[11px] text-emerald-700">{keyNotice}</span>}
+              </div>
+              <p className="text-[10px] text-gray-600">
+                The free tier allows only a handful of requests per minute. If you hit the limit,
+                wait a moment or switch to a local engine.
+              </p>
+            </section>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-xs font-mono">
       <div
@@ -263,6 +356,9 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
         </div>
 
         <div className="p-4 sm:p-6 overflow-y-auto space-y-5 flex-1">
+          {/* No key yet: put the form first, before ~560px of engine cards. */}
+          {!caps.hasGeminiKey && apiKeySection(true)}
+
           {/* Live progress, with a way out of it. */}
           {(isBusy || progress.status === 'error') && (
             <div
@@ -450,75 +546,9 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
             </section>
           )}
 
-          {/* API key */}
-          {(activeEngine === 'cloud-gemini' || !caps.hasGeminiKey) && (
-            <section className="space-y-2.5 border-t border-gray-200 pt-4">
-              <h3 className="text-xs font-bold text-gray-900">Your Gemini API key</h3>
-              <p className="text-[10px] text-gray-700">
-                Create a free key in Google AI Studio, then paste it here. It is stored only in
-                this browser and sent only to Google.{' '}
-                <strong>
-                  Restrict the key to this site by HTTP referrer — anyone with the key can spend
-                  your quota.
-                </strong>
-              </p>
-              <a
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noreferrer noopener"
-                className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 hover:underline min-h-11"
-              >
-                Get a free API key <ExternalLink className="w-3 h-3" />
-              </a>
-
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <label htmlFor="gemini-key" className="sr-only">
-                    Gemini API key
-                  </label>
-                  <input
-                    id="gemini-key"
-                    type={showKey ? 'text' : 'password'}
-                    value={keyInput}
-                    onChange={(e) => setKeyInput(e.target.value)}
-                    placeholder="Paste your API key"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="w-full min-h-11 rounded-lg border border-gray-300 px-3 pr-11 text-xs text-gray-900 focus:border-emerald-500 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5 text-gray-500 hover:text-gray-900"
-                  >
-                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <button
-                  onClick={handleSaveKey}
-                  className="min-h-11 px-4 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700"
-                >
-                  Save
-                </button>
-              </div>
-
-              <div className="flex items-center gap-3 flex-wrap">
-                <button
-                  onClick={handleForgetKey}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-gray-700 hover:text-red-700 min-h-11"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Forget my key
-                </button>
-                {keyNotice && <span className="text-[11px] text-emerald-700">{keyNotice}</span>}
-              </div>
-              <p className="text-[10px] text-gray-600">
-                The free tier allows only a handful of requests per minute. If you hit the limit,
-                wait a moment or switch to a local engine.
-              </p>
-            </section>
-          )}
-
+          {/* Once a key is stored this sits with the other settings. Until
+              then it is promoted to the top of the dialog — see apiKeySection. */}
+          {caps.hasGeminiKey && apiKeySection(false)}
           {/* Storage */}
           <section className="border-t border-gray-200 pt-4 space-y-2">
             <h3 className="text-xs font-bold text-gray-900 flex items-center gap-1.5">

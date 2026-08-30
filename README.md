@@ -71,15 +71,15 @@ sent anywhere except to Google, and can be removed with one click.
 
 #### Where to paste the API key
 
-1. Click the **AI engine button in the header** (the chip showing the current
-   engine) to open the engine picker.
-2. Choose **"Gemini, with your API key"**.
-3. The key field appears directly beneath the engine cards. Paste, press
-   **Save**.
+Click the **AI engine chip in the header** to open the engine picker. If no key
+is stored, the key form is the **first thing in that dialog**, above the engine
+cards — paste and press **Save**.
 
-The field is also shown whenever no key is stored, whichever engine is
-selected, so it is findable without hunting. `strudel.key()` in the browser
-console reports whether a key is saved.
+Selecting **"Gemini, with your API key"** also scrolls to the field and focuses
+it, and if Gemini is active without a key the app shows an **"Add API key"**
+banner above the prompt bar.
+
+`strudel.key()` in the browser console reports whether a key is saved.
 
 > **If you use a Gemini key, restrict it.** Create a free key in
 > [Google AI Studio](https://aistudio.google.com/apikey) and add an HTTP-referrer

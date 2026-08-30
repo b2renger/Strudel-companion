@@ -82,12 +82,19 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<'copilot' | 'breakdown'>('copilot');
 
+  /** True when Gemini is selected but no key has been entered yet. */
+  const [needsGeminiKey, setNeedsGeminiKey] = useState<boolean>(false);
+
   useEffect(() => {
     const unsubProgress = aiManager.onProgress(setAiProgress);
     const unsubEngine = aiManager.onEngineChange(setActiveEngine);
+    const unsubCaps = aiManager.onCapabilities((caps) => {
+      setNeedsGeminiKey(aiManager.getActiveEngine() === 'cloud-gemini' && !caps.hasGeminiKey);
+    });
     return () => {
       unsubProgress();
       unsubEngine();
+      unsubCaps();
     };
   }, []);
 
@@ -597,6 +604,30 @@ export default function App() {
         </div>
 
         {/* Natural Language Prompt Bar */}
+        {/*
+          Gemini is selected but unconfigured. Without this the only signal was
+          a failed generation, and the key field lives inside a modal the user
+          has no reason to open.
+        */}
+        {needsGeminiKey && (
+          <div className="mb-3 rounded-xl border-2 border-emerald-500 bg-emerald-50 px-3.5 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-emerald-900">
+                Gemini needs your API key before it can generate anything.
+              </p>
+              <p className="text-[11px] text-emerald-800">
+                It is free, stored only in this browser, and takes about a minute to create.
+              </p>
+            </div>
+            <button
+              onClick={() => setIsAIEngineOpen(true)}
+              className="min-h-11 px-4 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 shrink-0"
+            >
+              Add API key
+            </button>
+          </div>
+        )}
+
         <AIPromptBar onGenerate={handleGenerateAI} isLoading={isGenerating} aiProgress={aiProgress} />
 
         {/*
