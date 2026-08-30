@@ -7,9 +7,20 @@ import { AILiveCopilot } from './components/AILiveCopilot';
 import { LineByLineBreakdown } from './components/LineByLineBreakdown';
 import { NotationGuide } from './components/NotationGuide';
 import { PresetSelectorModal } from './components/PresetSelectorModal';
+import { SavedSessionsModal } from './components/SavedSessionsModal';
+import { ExportReplModal } from './components/ExportReplModal';
+import { AIEngineSelectorModal } from './components/AIEngineSelectorModal';
 import { STARTER_PRESETS } from './data/presets';
 import { audioEngine } from './engine/audioEngine';
-import { AIExplanationResult, AIVariation, TrackPreset } from './types';
+import { aiManager } from './ai/aiManager';
+import { AIExplanationResult, AIVariation, TrackPreset, SavedSession, AIEngineProgress, AIEngineType } from './types';
+
+import {
+  getSavedSessions,
+  saveSession,
+  getActiveSessionId,
+  setActiveSessionId,
+} from './utils/sessionStorage';
 import { Play, Square, Music, Sparkles, Terminal, BookOpen, Layers } from 'lucide-react';
 
 export default function App() {
@@ -33,9 +44,36 @@ export default function App() {
   const [variations, setVariations] = useState<AIVariation[]>([]);
   const [lastTweakDiffs, setLastTweakDiffs] = useState<string[]>([]);
 
+  // Modals state
   const [isPresetsOpen, setIsPresetsOpen] = useState<boolean>(false);
   const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
+  const [isSessionsOpen, setIsSessionsOpen] = useState<boolean>(false);
+  const [isExportReplOpen, setIsExportReplOpen] = useState<boolean>(false);
+  const [isAIEngineOpen, setIsAIEngineOpen] = useState<boolean>(false);
+  const [savedSessionsCount, setSavedSessionsCount] = useState<number>(0);
+
+  const [aiProgress, setAiProgress] = useState<AIEngineProgress>(aiManager.getProgress());
+  const [activeEngine, setActiveEngine] = useState<AIEngineType>(aiManager.getActiveEngine());
+
   const [activeTab, setActiveTab] = useState<'copilot' | 'breakdown'>('copilot');
+
+  useEffect(() => {
+    const unsubProgress = aiManager.onProgress(setAiProgress);
+    const unsubEngine = aiManager.onEngineChange(setActiveEngine);
+    return () => {
+      unsubProgress();
+      unsubEngine();
+    };
+  }, []);
+
+  // Load initial saved sessions count and default variations
+  useEffect(() => {
+    const loaded = getSavedSessions();
+    setSavedSessionsCount(loaded.length);
+    if (loaded.length > 0 && loaded[0].variations) {
+      setVariations(loaded[0].variations);
+    }
+  }, []);
 
   // Sync engine cycle for header badge
   useEffect(() => {
@@ -121,7 +159,115 @@ export default function App() {
     setIsPlaying(true);
   };
 
-  // 1. Generate Track with Gemini AI
+  // Load a Saved Session
+  const handleLoadSession = (session: SavedSession) => {
+    setCurrentTrack({
+      id: session.id,
+      title: session.name,
+      genre: session.genre,
+      bpm: session.bpm,
+      complexity: 'Intermediate',
+      code: session.code,
+      description: session.description || session.name,
+      tags: session.tags || [],
+    });
+    setCode(session.code);
+    setBpm(session.bpm);
+    setVariations(session.variations || []);
+    setErrorMessage(null);
+    setLastTweakDiffs([]);
+
+    audioEngine.evaluate(session.code);
+    audioEngine.setBpm(session.bpm);
+    audioEngine.play();
+    setIsPlaying(true);
+
+    const loaded = getSavedSessions();
+    setSavedSessionsCount(loaded.length);
+  };
+
+  // Load a single variation directly into the editor
+  const handleLoadVariation = (variationCode: string, title: string) => {
+    setCode(variationCode);
+    const evalRes = audioEngine.evaluate(variationCode);
+    if (evalRes.success) {
+      setErrorMessage(null);
+      audioEngine.play();
+      setIsPlaying(true);
+      setLastTweakDiffs([`Switched to variation: "${title}"`]);
+    } else {
+      setErrorMessage(evalRes.error || 'Error evaluating variation');
+    }
+  };
+
+  // Save a specific variation to the current session in storage
+  const handleSaveVariationToSession = (variation: AIVariation) => {
+    const activeId = getActiveSessionId();
+    const sessions = getSavedSessions();
+    const activeSession = sessions.find((s) => s.id === activeId) || sessions[0];
+
+    const newVar: AIVariation = {
+      ...variation,
+      id: variation.id || 'var-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      createdAt: variation.createdAt || Date.now(),
+    };
+
+    if (activeSession) {
+      const existingVars = activeSession.variations || [];
+      const isAlreadyIn = existingVars.some((v) => v.code.trim() === variation.code.trim());
+      if (!isAlreadyIn) {
+        activeSession.variations = [newVar, ...existingVars];
+        saveSession(activeSession);
+      }
+    }
+
+    setVariations((prev) => {
+      const exists = prev.some((v) => v.code.trim() === variation.code.trim());
+      return exists ? prev : [newVar, ...prev];
+    });
+
+    setSavedSessionsCount(getSavedSessions().length);
+  };
+
+  // Add custom user variation snapshot
+  const handleAddCustomVariation = (title: string, customCode: string) => {
+    const customVar: AIVariation = {
+      id: 'var-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      title,
+      type: 'drop',
+      description: `Snapshot created on ${new Date().toLocaleTimeString()}`,
+      code: customCode,
+      createdAt: Date.now(),
+    };
+
+    setVariations((prev) => [customVar, ...prev]);
+    handleSaveVariationToSession(customVar);
+  };
+
+  // Quick save current workspace
+  const handleQuickSave = () => {
+    const activeId = getActiveSessionId();
+    const sessions = getSavedSessions();
+    const existing = sessions.find((s) => s.id === activeId);
+
+    const sessionToSave: SavedSession = {
+      id: existing ? existing.id : 'session-' + Date.now(),
+      name: existing ? existing.name : currentTrack.title || 'Studio Session',
+      code: code,
+      bpm: bpm,
+      genre: currentTrack.genre || 'Electronic',
+      tags: currentTrack.tags || ['Live'],
+      description: `Session with ${variations.length} variations`,
+      variations: variations,
+      createdAt: existing ? existing.createdAt : Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const updatedList = saveSession(sessionToSave);
+    setSavedSessionsCount(updatedList.length);
+  };
+
+  // 1. Generate Track with AI (Client-Side Gemma / Heuristics / Cloud)
   const handleGenerateAI = async (
     prompt: string,
     style: string,
@@ -130,14 +276,8 @@ export default function App() {
     setIsGenerating(true);
     setErrorMessage(null);
     try {
-      const response = await fetch('/api/generate-strudel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, style, complexity, tempo: bpm }),
-      });
-      const resData = await response.json();
-      if (resData.success && resData.data) {
-        const generated = resData.data;
+      const generated = await aiManager.generateTrack(prompt, style, complexity, bpm);
+      if (generated && generated.code) {
         setCode(generated.code);
         if (generated.bpm) {
           setBpm(generated.bpm);
@@ -175,10 +315,10 @@ export default function App() {
           setErrorMessage(evalRes.error || 'Syntax error in generated pattern');
         }
       } else {
-        setErrorMessage(resData.error || 'Failed to generate track with AI');
+        setErrorMessage('Failed to generate track with AI');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Network error during AI generation');
+      setErrorMessage(err.message || 'Error during AI generation');
     } finally {
       setIsGenerating(false);
     }
@@ -188,14 +328,8 @@ export default function App() {
   const handleTweakCode = async (instruction: string) => {
     setIsTweaking(true);
     try {
-      const response = await fetch('/api/tweak-pattern', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentCode: code, instruction }),
-      });
-      const resData = await response.json();
-      if (resData.success && resData.data) {
-        const tweaked = resData.data;
+      const tweaked = await aiManager.tweakPattern(code, instruction);
+      if (tweaked && tweaked.code) {
         setCode(tweaked.code);
         setLastTweakDiffs(tweaked.diffHighlights || [tweaked.summary]);
 
@@ -209,10 +343,10 @@ export default function App() {
           setErrorMessage(evalRes.error || 'Error evaluating tweaked code');
         }
       } else {
-        setErrorMessage(resData.error || 'Failed to tweak pattern');
+        setErrorMessage('Failed to tweak pattern');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Network error during tweak');
+      setErrorMessage(err.message || 'Error during tweak');
     } finally {
       setIsTweaking(false);
     }
@@ -223,14 +357,9 @@ export default function App() {
     setIsExplaining(true);
     setActiveTab('breakdown');
     try {
-      const response = await fetch('/api/explain-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      });
-      const resData = await response.json();
-      if (resData.success && resData.data) {
-        setExplanation(resData.data);
+      const res = await aiManager.explainCode(code);
+      if (res) {
+        setExplanation(res);
       }
     } catch (err: any) {
       console.error('Explanation error:', err);
@@ -243,20 +372,46 @@ export default function App() {
   const handleRequestVariations = async (mood: string) => {
     setIsLoadingVariations(true);
     try {
-      const response = await fetch('/api/suggest-variations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentCode: code, mood }),
-      });
-      const resData = await response.json();
-      if (resData.success && resData.data && resData.data.variations) {
-        setVariations(resData.data.variations);
+      const res = await aiManager.suggestVariations(code, mood);
+      if (res && res.variations && res.variations.length > 0) {
+        const incoming = res.variations.map((v: AIVariation) => ({
+          ...v,
+          id: v.id || 'var-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          createdAt: Date.now(),
+        }));
+
+        // Accumulate variations so users can regenerate multiple times
+        setVariations((prev) => {
+          const existingCodes = new Set(prev.map((p) => p.code.trim()));
+          const fresh = incoming.filter((v) => !existingCodes.has(v.code.trim()));
+          const toAdd = fresh.length > 0 ? fresh : incoming;
+          return [...toAdd, ...prev];
+        });
+
+        // Auto-save generated variations to active session if exists
+        const activeId = getActiveSessionId();
+        if (activeId) {
+          const sessions = getSavedSessions();
+          const target = sessions.find((s) => s.id === activeId);
+          if (target) {
+            target.variations = [...incoming, ...(target.variations || [])];
+            saveSession(target);
+          }
+        }
       }
     } catch (err: any) {
       console.error('Variations error:', err);
     } finally {
       setIsLoadingVariations(false);
     }
+  };
+
+  const handleDeleteVariation = (variationId: string) => {
+    setVariations((prev) => prev.filter((v) => v.id !== variationId));
+  };
+
+  const handleClearVariations = () => {
+    setVariations([]);
   };
 
   // Apply a variation immediately
@@ -277,14 +432,8 @@ export default function App() {
     if (!errorMessage) return;
     setIsFixing(true);
     try {
-      const response = await fetch('/api/fix-errors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, errorMessage }),
-      });
-      const resData = await response.json();
-      if (resData.success && resData.data) {
-        const fixed = resData.data;
+      const fixed = await aiManager.fixCode(code, errorMessage);
+      if (fixed && fixed.fixedCode) {
         setCode(fixed.fixedCode);
         setErrorMessage(null);
         setLastTweakDiffs([fixed.fixExplanation || fixed.reason]);
@@ -308,8 +457,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--app-bg)] text-gray-900 flex flex-col selection:bg-emerald-500/30 ">
-      {/* Studio Header */}
+    <div className="min-h-screen bg-[var(--app-bg)] text-gray-900 flex flex-col selection:bg-emerald-500/30">
+      {/* Studio Header with Sessions & REPL Export */}
       <StudioHeader
         isPlaying={isPlaying}
         bpm={bpm}
@@ -324,8 +473,14 @@ export default function App() {
         currentCycle={currentCycle}
         onOpenPresets={() => setIsPresetsOpen(true)}
         onOpenGuide={() => setIsGuideOpen(true)}
+        onOpenSessions={() => setIsSessionsOpen(true)}
+        onOpenExportRepl={() => setIsExportReplOpen(true)}
+        onQuickSave={handleQuickSave}
+        savedSessionsCount={savedSessionsCount}
         trackTitle={currentTrack.title}
+        onOpenAIEngine={() => setIsAIEngineOpen(true)}
       />
+
 
       {/* Main Workspace Layout */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col gap-5 sm:gap-6 font-mono">
@@ -379,7 +534,7 @@ export default function App() {
         </div>
 
         {/* Natural Language Prompt Bar */}
-        <AIPromptBar onGenerate={handleGenerateAI} isLoading={isGenerating} />
+        <AIPromptBar onGenerate={handleGenerateAI} isLoading={isGenerating} aiProgress={aiProgress} />
 
         {/* Real-time Oscilloscope & Radar Visualizer */}
         <PatternVisualizer isPlaying={isPlaying} bpm={bpm} />
@@ -400,6 +555,8 @@ export default function App() {
               errorMessage={errorMessage}
               onFixWithAI={handleFixWithAI}
               isFixing={isFixing}
+              aiProgress={aiProgress}
+              onOpenExportRepl={() => setIsExportReplOpen(true)}
             />
 
             {/* Quick Track Metadata Info Card */}
@@ -411,14 +568,28 @@ export default function App() {
                 <span className="text-gray-600 text-[10px] uppercase">{currentTrack.genre}</span>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsExportReplOpen(true)}
+                  className="px-2 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1 transition-colors uppercase"
+                  title="Export to strudel.cc REPL"
+                >
+                  <span>strudel.cc REPL</span>
+                </button>
+
                 <button
                   onClick={handleExplainCode}
                   disabled={isExplaining}
-                  className="px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold flex items-center gap-1 transition-colors uppercase"
+                  className="px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-700 border border-cyan-500/30 text-[10px] font-bold flex items-center gap-1 transition-colors uppercase"
                 >
                   <BookOpen className="w-3 h-3" />
-                  <span>{isExplaining ? 'Analyzing...' : 'Explain Code'}</span>
+                  <span>
+                    {isExplaining && aiProgress && aiProgress.status === 'downloading'
+                      ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
+                      : isExplaining && aiProgress
+                      ? aiProgress.text || 'Analyzing...'
+                      : 'Explain Code'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -464,6 +635,11 @@ export default function App() {
                 isTweaking={isTweaking}
                 isLoadingVariations={isLoadingVariations}
                 lastTweakDiffs={lastTweakDiffs}
+                onSaveVariationToSession={handleSaveVariationToSession}
+                onAddCustomVariation={handleAddCustomVariation}
+                onDeleteVariation={handleDeleteVariation}
+                onClearVariations={handleClearVariations}
+                onOpenSessionsModal={() => setIsSessionsOpen(true)}
               />
             ) : (
               <LineByLineBreakdown
@@ -476,6 +652,35 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* AI Engine & Local WebGPU Runtime Modal */}
+      <AIEngineSelectorModal
+        isOpen={isAIEngineOpen}
+        onClose={() => setIsAIEngineOpen(false)}
+      />
+
+      {/* Saved Sessions & Variations Management Modal */}
+
+      <SavedSessionsModal
+        isOpen={isSessionsOpen}
+        onClose={() => setIsSessionsOpen(false)}
+        currentCode={code}
+        currentBpm={bpm}
+        currentGenre={currentTrack.genre || 'Electronic'}
+        currentTrackTitle={currentTrack.title}
+        currentVariations={variations}
+        onLoadSession={handleLoadSession}
+        onLoadVariation={handleLoadVariation}
+      />
+
+      {/* Official Strudel REPL Export Modal */}
+      <ExportReplModal
+        isOpen={isExportReplOpen}
+        onClose={() => setIsExportReplOpen(false)}
+        code={code}
+        trackTitle={currentTrack.title}
+        bpm={bpm}
+      />
 
       {/* Preset Tracks Drawer/Modal */}
       <PresetSelectorModal
@@ -502,7 +707,7 @@ export default function App() {
           <div className="flex items-center gap-3 text-gray-500">
             <span>Engine: Strudel Mini-Notation</span>
             <span>•</span>
-            <span>AI: Gemini 2.5 Flash</span>
+            <span>AI: Gemini 3.7 Flash</span>
           </div>
         </div>
       </footer>

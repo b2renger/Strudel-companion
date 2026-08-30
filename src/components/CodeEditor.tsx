@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { AIEngineProgress } from '../types';
 import {
   Play,
   Square,
@@ -25,16 +26,25 @@ import {
   Shuffle,
   Grid,
   Edit3,
+  Globe,
+  ExternalLink,
+  X,
+  Trash2,
 } from 'lucide-react';
 import { audioEngine, EvalEvent } from '../engine/audioEngine';
 import {
   parseStrudelCodeToTokens,
   replaceTokenInCode,
+  insertBlockBehindTokenInCode,
+  insertBlockAtLineInCode,
+  removeBlockInCode,
+  removeLayerInCode,
   StrudelToken,
   ParsedCodeLayer,
 } from '../utils/strudelTokenParser';
 import { TokenInspectorModal } from './TokenInspectorModal';
 import { InteractiveCodeHighlighter } from './InteractiveCodeHighlighter';
+import { AddBlockModal } from './AddBlockModal';
 
 interface CodeEditorProps {
   code: string;
@@ -45,6 +55,8 @@ interface CodeEditorProps {
   errorMessage: string | null;
   onFixWithAI?: () => void;
   isFixing?: boolean;
+  aiProgress?: AIEngineProgress;
+  onOpenExportRepl?: () => void;
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = ({
@@ -56,6 +68,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   errorMessage,
   onFixWithAI,
   isFixing = false,
+  aiProgress,
+  onOpenExportRepl,
 }) => {
   const [copied, setCopied] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -63,11 +77,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const [isMaximized, setIsMaximized] = useState(false);
   const [fontSize, setFontSize] = useState<number>(13); // px
   const [activeQuickTab, setActiveQuickTab] = useState<'symbols' | 'methods' | 'tools'>('symbols');
-  const [editorViewMode, setEditorViewMode] = useState<'highlighted' | 'code' | 'visual'>('highlighted');
+  const [editorViewMode, setEditorViewMode] = useState<'code' | 'highlighted' | 'visual'>('code');
+  const [autoEvalEnabled, setAutoEvalEnabled] = useState<boolean>(false);
+  const [lastEvaluatedCode, setLastEvaluatedCode] = useState<string>(typeof code === 'string' ? code : '');
 
   // Token Inspector Modal State
   const [selectedToken, setSelectedToken] = useState<StrudelToken | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
+
+  // Add Block of Choice Modal State
+  const [isAddBlockOpen, setIsAddBlockOpen] = useState<boolean>(false);
+  const [addBlockTargetToken, setAddBlockTargetToken] = useState<StrudelToken | null>(null);
+  const [addBlockTargetLine, setAddBlockTargetLine] = useState<number | undefined>(undefined);
 
   // Eval Visual Feedback States
   const [isEvalFlashing, setIsEvalFlashing] = useState(false);
@@ -85,11 +106,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   }));
   const isHistoryAction = useRef<boolean>(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const autoEvalTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
 
   const safeCode = typeof code === 'string' ? code : '';
+  const hasUnappliedChanges = lastEvaluatedCode.trim() !== safeCode.trim();
 
   // Parse code into interactive layers & tokens
   const parsedData = useMemo(() => {
@@ -101,6 +124,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     const unsubscribe = audioEngine.subscribeEval((ev: EvalEvent) => {
       setLastEvalEvent(ev);
       if (ev.success) {
+        setLastEvaluatedCode(ev.code || safeCode);
         setIsEvalFlashing(true);
         const timer = setTimeout(() => {
           setIsEvalFlashing(false);
@@ -109,7 +133,29 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       }
     });
     return unsubscribe;
-  }, []);
+  }, [safeCode]);
+
+  // Safe direct evaluation function ensuring current buffer is used
+  const triggerSafeEvaluate = useCallback((codeToEval?: string) => {
+    const target = typeof codeToEval === 'string' ? codeToEval : (textareaRef.current?.value ?? code);
+    setLastEvaluatedCode(target);
+    onEvaluate(target);
+  }, [code, onEvaluate]);
+
+  // Auto-eval on typing if enabled
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+    onChange(newText);
+
+    if (autoEvalEnabled) {
+      if (autoEvalTimerRef.current) {
+        clearTimeout(autoEvalTimerRef.current);
+      }
+      autoEvalTimerRef.current = setTimeout(() => {
+        triggerSafeEvaluate(newText);
+      }, 400);
+    }
+  };
 
   // Flush any pending text into history stack immediately
   const flushPendingHistory = useCallback((currentText: string) => {
@@ -212,7 +258,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     // Ctrl+Enter or Cmd+Enter -> Run & Evaluate
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      onEvaluate();
+      triggerSafeEvaluate(e.currentTarget.value);
     }
     // Ctrl+. or Cmd+. -> Stop / Hush
     if ((e.ctrlKey || e.metaKey) && e.key === '.') {
@@ -271,9 +317,56 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     setSelectedToken(null);
 
     if (autoEval) {
-      onEvaluate(updatedCode);
+      triggerSafeEvaluate(updatedCode);
     }
   };
+
+  // Open Add Block Modal behind any token or at line
+  const handleOpenAddBlock = useCallback((token: StrudelToken | null, lineNumber?: number) => {
+    setAddBlockTargetToken(token);
+    setAddBlockTargetLine(lineNumber);
+    setIsAddBlockOpen(true);
+  }, []);
+
+  // Insert Block of Choice and automatically synchronize buffer & audio engine
+  const handleInsertBlock = useCallback((blockCode: string, autoEval = true) => {
+    let updatedCode = code;
+    if (addBlockTargetToken) {
+      updatedCode = insertBlockBehindTokenInCode(code, addBlockTargetToken, blockCode);
+    } else if (typeof addBlockTargetLine === 'number') {
+      updatedCode = insertBlockAtLineInCode(code, addBlockTargetLine, blockCode);
+    } else {
+      updatedCode = code + '\n' + blockCode;
+    }
+
+    onChange(updatedCode);
+
+    if (autoEval) {
+      triggerSafeEvaluate(updatedCode);
+    }
+  }, [code, addBlockTargetToken, addBlockTargetLine, onChange, triggerSafeEvaluate]);
+
+  // Remove Selected Block / Token
+  const handleRemoveToken = useCallback((token: StrudelToken, autoEval = true) => {
+    const updatedCode = removeBlockInCode(code, token);
+    onChange(updatedCode);
+    setIsInspectorOpen(false);
+    setSelectedToken(null);
+
+    if (autoEval) {
+      triggerSafeEvaluate(updatedCode);
+    }
+  }, [code, onChange, triggerSafeEvaluate]);
+
+  // Remove Entire Layer / Track
+  const handleRemoveLayer = useCallback((lineNumber: number, autoEval = true) => {
+    const updatedCode = removeLayerInCode(code, lineNumber);
+    onChange(updatedCode);
+
+    if (autoEval) {
+      triggerSafeEvaluate(updatedCode);
+    }
+  }, [code, onChange, triggerSafeEvaluate]);
 
   // Smart Snippet Insert or Wrap Selected Text
   const insertOrWrapSnippet = (snippet: string, isWrapper = false, wrapPair: [string, string] = ['', '']) => {
@@ -516,7 +609,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
           {/* Quick Eval Action with Applied Visual Feedback */}
           <button
-            onClick={() => onEvaluate()}
+            onClick={() => triggerSafeEvaluate()}
             className={`px-3 py-1 rounded-full font-bold text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95 uppercase tracking-tight ${
               isEvalFlashing
                 ? 'bg-emerald-500 text-white ring-2 ring-emerald-500 scale-105'
@@ -568,6 +661,19 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         <div className="flex items-center gap-1.5">
           <div className="flex items-center bg-[var(--app-card-1)] p-0.5 rounded-lg border border-gray-200">
             <button
+              onClick={() => setEditorViewMode('code')}
+              className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1 transition-all ${
+                editorViewMode === 'code'
+                  ? 'bg-pink-500 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+              title="Raw text keyboard editor"
+            >
+              <Code2 className="w-3 h-3" />
+              <span>Editor</span>
+            </button>
+
+            <button
               onClick={() => setEditorViewMode('highlighted')}
               className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1 transition-all ${
                 editorViewMode === 'highlighted'
@@ -584,19 +690,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             </button>
 
             <button
-              onClick={() => setEditorViewMode('code')}
-              className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1 transition-all ${
-                editorViewMode === 'code'
-                  ? 'bg-pink-500 text-white shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-              title="Raw text keyboard editor"
-            >
-              <Code2 className="w-3 h-3" />
-              <span>Raw Text</span>
-            </button>
-
-            <button
               onClick={() => setEditorViewMode('visual')}
               className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase flex items-center gap-1 transition-all ${
                 editorViewMode === 'visual'
@@ -610,8 +703,31 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             </button>
           </div>
 
-          {/* Dynamic Evaluation Live Badge */}
-          {lastEvalEvent && lastEvalEvent.success && (
+          {/* Auto-Eval on Edit Toggle */}
+          <button
+            onClick={() => setAutoEvalEnabled((p) => !p)}
+            className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase flex items-center gap-1 border transition-all ${
+              autoEvalEnabled
+                ? 'bg-emerald-500 text-white border-emerald-600 shadow-xs'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-600 border-gray-200'
+            }`}
+            title="Auto-evaluate on every edit (debounced)"
+          >
+            <Zap className={`w-2.5 h-2.5 ${autoEvalEnabled ? 'fill-current animate-pulse' : ''}`} />
+            <span>Auto-Eval: {autoEvalEnabled ? 'ON' : 'OFF'}</span>
+          </button>
+
+          {/* Buffer Modified Warning or Live Sync Badge */}
+          {hasUnappliedChanges ? (
+            <span
+              onClick={() => triggerSafeEvaluate()}
+              className="cursor-pointer text-[9px] px-2 py-0.5 rounded-full font-bold uppercase bg-amber-500/20 text-amber-700 border border-amber-500/40 hidden md:flex items-center gap-1 animate-pulse"
+              title="Click to evaluate pending changes"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <span>Press EVAL to apply</span>
+            </span>
+          ) : lastEvalEvent && lastEvalEvent.success ? (
             <span
               className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase transition-all duration-300 hidden md:flex items-center gap-1 ${
                 isEvalFlashing
@@ -622,7 +738,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               <Zap className={`w-2.5 h-2.5 ${isEvalFlashing ? 'text-white fill-current' : 'text-emerald-600'}`} />
               <span>{isEvalFlashing ? '✓ Applied Live' : `Cyc #${lastEvalEvent.cycle}`}</span>
             </span>
-          )}
+          ) : null}
         </div>
 
         {/* Right Action Controls: Undo, Redo, Font Size, Maximize, Copy, Eval */}
@@ -676,6 +792,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             {isMaximized ? <Minimize2 className="w-3 h-3 text-emerald-600" /> : <Maximize2 className="w-3 h-3 text-gray-900" />}
           </button>
 
+          {/* Export to strudel.cc REPL */}
+          {onOpenExportRepl && (
+            <button
+              onClick={onOpenExportRepl}
+              className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 border border-emerald-500/30 flex items-center gap-1 transition-colors"
+              title="Send code pattern to official strudel.cc editor"
+            >
+              <Globe className="w-3 h-3 text-emerald-600" />
+              <span className="hidden sm:inline font-semibold">strudel.cc</span>
+            </button>
+          )}
+
           {/* Copy Button */}
           <button
             onClick={handleCopy}
@@ -689,10 +817,12 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           {/* EVAL Primary Button with Instant Visual Feedback */}
           <button
             id="editor-eval-btn"
-            onClick={() => onEvaluate()}
+            onClick={() => triggerSafeEvaluate()}
             className={`px-3 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95 uppercase ${
               isEvalFlashing
                 ? 'bg-emerald-500 text-white ring-2 ring-emerald-500 shadow-[0_0_16px_rgba(5,150,105,0.6)] scale-105'
+                : hasUnappliedChanges
+                ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-[0_0_12px_rgba(245,158,11,0.4)]'
                 : 'bg-emerald-500 hover:bg-emerald-500/90 text-white'
             }`}
             title="Evaluate pattern (Ctrl+Enter)"
@@ -701,6 +831,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               <>
                 <Check className="w-3 h-3 text-white stroke-[3]" />
                 <span>APPLIED!</span>
+              </>
+            ) : hasUnappliedChanges ? (
+              <>
+                <Play className="w-2.5 h-2.5 fill-current" />
+                <span>APPLY CHANGES</span>
               </>
             ) : (
               <>
@@ -713,30 +848,41 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       </div>
 
       {/* PARSED TOKEN QUICK-PICK STRIP (Touch any parsed note, sample, subdivision in real-time) */}
-      <div className="bg-[var(--app-card-1)] border-b border-gray-200 px-3 py-1.5 flex items-center gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 no-scrollbar">
-        <div className="flex items-center gap-1 shrink-0 text-[10px] text-gray-900 font-bold uppercase">
-          <Zap className="w-3 h-3 text-emerald-600" />
-          <span>Quick Tokens:</span>
+      <div className="bg-[var(--app-card-1)] border-b border-gray-200 px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 no-scrollbar">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 shrink-0 text-[10px] text-gray-900 font-bold uppercase">
+            <Zap className="w-3 h-3 text-emerald-600" />
+            <span>Quick Tokens:</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0 py-0.5">
+            {parsedData.allTokens.length > 0 ? (
+              parsedData.allTokens.map((token) => (
+                <button
+                  key={token.id}
+                  onClick={() => handleOpenTokenInspector(token)}
+                  className={`px-2 py-0.5 rounded-lg border text-[11px] font-mono font-bold transition-all active:scale-95 shrink-0 shadow-sm ${getTokenStyle(
+                    token.type
+                  )}`}
+                  title={`Inspect & modify ${token.raw} (${token.type})`}
+                >
+                  {token.raw}
+                </button>
+              ))
+            ) : (
+              <span className="text-[10px] text-gray-600">No active tokens parsed</span>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0 py-0.5">
-          {parsedData.allTokens.length > 0 ? (
-            parsedData.allTokens.map((token) => (
-              <button
-                key={token.id}
-                onClick={() => handleOpenTokenInspector(token)}
-                className={`px-2 py-0.5 rounded-lg border text-[11px] font-mono font-bold transition-all active:scale-95 shrink-0 shadow-sm ${getTokenStyle(
-                  token.type
-                )}`}
-                title={`Inspect & modify ${token.raw} (${token.type})`}
-              >
-                {token.raw}
-              </button>
-            ))
-          ) : (
-            <span className="text-[10px] text-gray-600">No active tokens parsed</span>
-          )}
-        </div>
+        <button
+          onClick={() => handleOpenAddBlock(null)}
+          className="px-2 py-0.5 rounded-lg bg-pink-500/15 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/30 text-[10px] font-bold uppercase transition-all flex items-center gap-1 shrink-0 active:scale-95 shadow-2xs"
+          title="Add block of choice behind any block or layer"
+        >
+          <Plus className="w-3 h-3 stroke-[2.5]" />
+          <span>+ Add Block</span>
+        </button>
       </div>
 
       {/* VIEW MODE 1: INTERACTIVE CODE HIGHLIGHTER (MOBILE TOUCH EXCELLENCE) */}
@@ -745,6 +891,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           code={code}
           parsedData={parsedData}
           onSelectToken={handleOpenTokenInspector}
+          onOpenAddBlock={handleOpenAddBlock}
+          onRemoveToken={handleRemoveToken}
           onSwitchToRawEdit={() => setEditorViewMode('code')}
           onEvaluate={onEvaluate}
           fontSize={fontSize}
@@ -763,9 +911,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           <div className="flex items-center justify-between text-[11px] text-gray-600 bg-gray-50 p-2 rounded-lg border border-gray-200">
             <span className="flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="text-gray-900">Tap any sound, pitch, subdivision, or effect below to modify with preset options or custom text</span>
+              <span className="text-gray-900">Tap any block to edit, or tap [+] to insert any sound, rhythm, pitch, or effect behind it</span>
             </span>
-            <span className="text-[10px] text-gray-600 uppercase">{parsedData.layers.length} Active Tracks</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleOpenAddBlock(null)}
+                className="px-2 py-0.5 rounded-md bg-pink-500/20 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/40 text-[10px] font-bold uppercase transition-all flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                <span>+ Add Block</span>
+              </button>
+              <span className="text-[10px] text-gray-600 uppercase font-mono">{parsedData.layers.length} Tracks</span>
+            </div>
           </div>
 
           {/* Layer Cards */}
@@ -791,24 +948,81 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                       </span>
                     </div>
 
-                    <span className="text-[10px] text-gray-900 font-mono">
-                      {layer.soundSource ? `${layer.soundSource}("...")` : 'Pattern Layer'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const lastTok = layer.tokens.length > 0 ? layer.tokens[layer.tokens.length - 1] : null;
+                          handleOpenAddBlock(lastTok, layer.lineStart);
+                        }}
+                        className="px-2 py-0.5 rounded-md bg-pink-500/15 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/30 text-[10px] font-bold flex items-center gap-1 transition-all active:scale-95"
+                        title={`Add block behind this layer`}
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Add Block</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleRemoveLayer(layer.lineStart)}
+                        className="px-2 py-0.5 rounded-md bg-red-500/15 hover:bg-red-500 text-red-600 hover:text-white border border-red-500/30 text-[10px] font-bold flex items-center gap-1 transition-all active:scale-95"
+                        title={`Remove track on line ${layer.lineStart}`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete Track</span>
+                      </button>
+
+                      <span className="text-[10px] text-gray-900 font-mono">
+                        {layer.soundSource ? `${layer.soundSource}("...")` : 'Pattern Layer'}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Interactive Tokens in Layer */}
                   <div className="bg-[var(--app-card-1)] p-2.5 rounded-lg border border-gray-200 flex flex-wrap items-center gap-1.5">
                     {layer.tokens.map((token) => (
-                      <button
-                        key={token.id}
-                        onClick={() => handleOpenTokenInspector(token)}
-                        className={`px-2.5 py-1 rounded-md border text-xs font-mono font-bold transition-all active:scale-95 flex items-center gap-1 shadow-sm ${getTokenStyle(
-                          token.type
-                        )}`}
-                      >
-                        <span>{token.raw}</span>
-                      </button>
+                      <span key={token.id} className="inline-flex items-center shadow-xs">
+                        <button
+                          onClick={() => handleOpenTokenInspector(token)}
+                          className={`px-2.5 py-1 rounded-l-md border-y border-l text-xs font-mono font-bold transition-all active:scale-95 flex items-center gap-1 ${getTokenStyle(
+                            token.type
+                          )}`}
+                          title={`Inspect & modify ${token.raw} (${token.type})`}
+                        >
+                          <span>{token.raw}</span>
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenAddBlock(token, layer.lineStart);
+                          }}
+                          className="px-1.5 py-1 bg-pink-500/20 hover:bg-pink-500 text-pink-700 hover:text-white border-y border-r border-pink-500/40 text-[10px] font-bold transition-all active:scale-90"
+                          title={`Add block behind "${token.raw}"`}
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveToken(token);
+                          }}
+                          className="px-1.5 py-1 rounded-r-md bg-red-500/15 hover:bg-red-500 text-red-600 hover:text-white border-y border-r border-red-500/30 text-[10px] font-bold transition-all active:scale-90"
+                          title={`Remove block "${token.raw}"`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
                     ))}
+
+                    <button
+                      onClick={() => {
+                        const lastTok = layer.tokens.length > 0 ? layer.tokens[layer.tokens.length - 1] : null;
+                        handleOpenAddBlock(lastTok, layer.lineStart);
+                      }}
+                      className="px-2 py-1 rounded-md bg-gray-100 hover:bg-pink-500/20 text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/30 text-xs font-bold flex items-center gap-1 transition-all active:scale-95"
+                      title="Add sound, rhythm, pitch, or effect to this layer"
+                    >
+                      <Plus className="w-3 h-3 text-pink-500" />
+                      <span>+ Block</span>
+                    </button>
                   </div>
                 </div>
               );
@@ -1024,7 +1238,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <textarea
               ref={textareaRef}
               value={code}
-              onChange={(e) => onChange(e.target.value)}
+              onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
               onScroll={handleScroll}
               onFocus={() => setIsFocused(true)}
@@ -1092,7 +1306,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               {isFixing ? (
                 <>
                   <RotateCcw className="w-3 h-3 animate-spin" />
-                  <span>Fixing with Gemini...</span>
+                  <span>
+                    {isFixing && aiProgress && aiProgress.status === 'downloading'
+                      ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%`
+                      : isFixing && aiProgress
+                      ? aiProgress.text || 'Fixing with AI...'
+                      : 'Fixing with AI...'}
+                  </span>
                 </>
               ) : (
                 <>
@@ -1115,6 +1335,22 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           setSelectedToken(null);
         }}
         onApplyTokenValue={handleApplyTokenValue}
+        onOpenAddBlockBehind={(tok) => handleOpenAddBlock(tok)}
+        onRemoveToken={handleRemoveToken}
+      />
+
+      {/* Add Block of Choice Modal (Works across all non-raw modes) */}
+      <AddBlockModal
+        isOpen={isAddBlockOpen}
+        targetToken={addBlockTargetToken}
+        targetLineNumber={addBlockTargetLine}
+        currentCode={code}
+        onClose={() => {
+          setIsAddBlockOpen(false);
+          setAddBlockTargetToken(null);
+          setAddBlockTargetLine(undefined);
+        }}
+        onInsertBlock={handleInsertBlock}
       />
     </div>
   );

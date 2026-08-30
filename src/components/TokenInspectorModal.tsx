@@ -15,6 +15,8 @@ import {
   Layers,
   ArrowRight,
   Radio,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 
 interface TokenInspectorModalProps {
@@ -23,6 +25,8 @@ interface TokenInspectorModalProps {
   currentCode: string;
   onClose: () => void;
   onApplyTokenValue: (token: StrudelToken, newValue: string, autoEval: boolean) => void;
+  onOpenAddBlockBehind?: (token: StrudelToken) => void;
+  onRemoveToken?: (token: StrudelToken) => void;
 }
 
 export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
@@ -31,6 +35,8 @@ export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
   currentCode,
   onClose,
   onApplyTokenValue,
+  onOpenAddBlockBehind,
+  onRemoveToken,
 }) => {
   const [customValue, setCustomValue] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'contextual' | 'subdivide' | 'chromatic' | 'effects' | 'custom'>('contextual');
@@ -1096,12 +1102,42 @@ export const TokenInspectorModal: React.FC<TokenInspectorModalProps> = ({
 
         {/* Modal Actions Footer */}
         <div className="p-3 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-2">
-          <button
-            onClick={onClose}
-            className="px-3 py-2 rounded-lg bg-black/5 hover:bg-black/10 text-gray-700 border border-gray-200 text-xs font-medium transition-colors"
-          >
-            Cancel
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg bg-black/5 hover:bg-black/10 text-gray-700 border border-gray-200 text-xs font-medium transition-colors"
+            >
+              Cancel
+            </button>
+
+            {onRemoveToken && token && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onRemoveToken(token);
+                }}
+                className="px-3 py-2 rounded-lg bg-red-500/15 hover:bg-red-500 text-red-600 hover:text-white border border-red-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs"
+                title={`Delete/Remove "${token.raw}" block from code`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove Block</span>
+              </button>
+            )}
+
+            {onOpenAddBlockBehind && token && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenAddBlockBehind(token);
+                }}
+                className="px-3 py-2 rounded-lg bg-pink-500/15 hover:bg-pink-500 text-pink-700 hover:text-white border border-pink-500/40 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs"
+                title="Open Add Block palette to insert any sound/effect behind this block"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Block Behind</span>
+              </button>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             <button

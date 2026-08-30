@@ -1,11 +1,13 @@
 import React from 'react';
 import { StrudelToken, ParseResult } from '../utils/strudelTokenParser';
-import { Sparkles, Edit3, Volume2, Music, Clock, Sliders, Shuffle, Grid, Play, Radio } from 'lucide-react';
+import { Sparkles, Edit3, Volume2, Music, Clock, Sliders, Shuffle, Grid, Play, Radio, Plus, X, Trash2 } from 'lucide-react';
 
 interface InteractiveCodeHighlighterProps {
   code: string;
   parsedData: ParseResult;
   onSelectToken: (token: StrudelToken) => void;
+  onOpenAddBlock: (token: StrudelToken | null, lineNumber?: number) => void;
+  onRemoveToken?: (token: StrudelToken) => void;
   onSwitchToRawEdit: () => void;
   onEvaluate: () => void;
   fontSize: number;
@@ -32,6 +34,8 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
   code,
   parsedData,
   onSelectToken,
+  onOpenAddBlock,
+  onRemoveToken,
   onSwitchToRawEdit,
   onEvaluate,
   fontSize,
@@ -83,23 +87,52 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
         );
       }
 
-      // Render interactive clickable token badge
+      // Render interactive token badge with attached "+" Add Block and "×" Remove Block buttons
       segments.push(
-        <button
-          key={tok.id}
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelectToken(tok);
-          }}
-          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 my-0.5 rounded font-mono font-bold text-left transition-all active:scale-95 cursor-pointer shadow-sm mx-0.5 ${getTokenHighlightClass(
-            tok.type
-          )}`}
-          title={`Tap to edit ${tok.type}: "${tok.raw}"`}
-        >
-          {getTokenIcon(tok.type)}
-          <span>{tok.raw}</span>
-        </button>
+        <span key={`tok-unit-${tok.id}`} className="inline-flex items-center my-0.5 mx-0.5 group/tok">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectToken(tok);
+            }}
+            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-l font-mono font-bold text-left transition-all active:scale-95 cursor-pointer shadow-xs ${getTokenHighlightClass(
+              tok.type
+            )}`}
+            title={`Tap to inspect/edit ${tok.type}: "${tok.raw}"`}
+          >
+            {getTokenIcon(tok.type)}
+            <span>{tok.raw}</span>
+          </button>
+
+          {/* Add block behind */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenAddBlock(tok, lineNum);
+            }}
+            className="inline-flex items-center justify-center px-1 py-0.5 bg-pink-500/20 hover:bg-pink-500 text-pink-700 hover:text-white border-y border-r border-pink-500/40 transition-all font-mono text-[9px] font-bold active:scale-90"
+            title={`+ Add block behind "${tok.raw}"`}
+          >
+            <Plus className="w-2.5 h-2.5 stroke-[2.5]" />
+          </button>
+
+          {/* Remove block button */}
+          {onRemoveToken && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveToken(tok);
+              }}
+              className="inline-flex items-center justify-center px-1 py-0.5 rounded-r bg-red-500/15 hover:bg-red-500 text-red-600 hover:text-white border-y border-r border-red-500/30 transition-all font-mono text-[9px] font-bold active:scale-90"
+              title={`Remove block "${tok.raw}"`}
+            >
+              <X className="w-2.5 h-2.5 stroke-[2.5]" />
+            </button>
+          )}
+        </span>
       );
 
       currentIdx = tok.endIndex;
@@ -124,6 +157,24 @@ export const InteractiveCodeHighlighter: React.FC<InteractiveCodeHighlighterProp
         </span>
       );
     }
+
+    // Add Line end "+" Add Block Action Pill
+    segments.push(
+      <button
+        key={`add-line-btn-${lineNum}`}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          const lastTok = sortedLineTokens.length > 0 ? sortedLineTokens[sortedLineTokens.length - 1] : null;
+          onOpenAddBlock(lastTok, lineNum);
+        }}
+        className="opacity-40 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 my-0.5 text-[9px] px-1.5 py-0.5 rounded-md bg-gray-100 hover:bg-pink-500/20 text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/40 inline-flex items-center gap-0.5 font-sans font-bold uppercase shrink-0 shadow-2xs"
+        title={`Add block to line ${lineNum}`}
+      >
+        <Plus className="w-2.5 h-2.5 text-pink-500" />
+        <span>Add Block</span>
+      </button>
+    );
 
     return segments;
   };

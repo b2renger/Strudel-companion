@@ -3,12 +3,15 @@ import { Sparkles, Wand2, Compass, Loader2, ArrowRight, Lightbulb, X, Tag } from
 import { INSPIRATION_PROMPTS } from '../data/presets';
 import { PromptSuggestionEngine, QUICK_ADD_MODIFIERS } from './PromptSuggestionEngine';
 
+import { AIEngineProgress } from '../types';
+
 interface AIPromptBarProps {
   onGenerate: (prompt: string, style: string, complexity: 'Beginner' | 'Intermediate' | 'Advanced') => void;
   isLoading: boolean;
+  aiProgress?: AIEngineProgress;
 }
 
-export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading }) => {
+export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading, aiProgress }) => {
   const [prompt, setPrompt] = useState('');
   const [selectedStyle, setSelectedStyle] = useState('All Styles');
   const [complexity, setComplexity] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Beginner');
@@ -52,13 +55,17 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading 
 
   const styles = [
     'Lo-Fi',
+    'Amapiano',
+    'Acid 303',
+    'Jungle / DnB',
+    'Koto Zen',
+    '8-Bit Chiptune',
+    'Bossa Nova',
     'Synthwave',
-    'Techno',
+    'Math Rock 7/8',
     'UK Garage',
     'Ambient Drone',
-    'Jungle / DnB',
-    'Bossa Nova',
-    'Acid 303',
+    'Footwork 160',
   ];
 
   return (
@@ -87,10 +94,10 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading 
             className={`px-3 py-1 rounded-md text-[10px] uppercase font-bold flex items-center gap-1.5 transition-all border shadow-sm ${
               isSuggestionsOpen
                 ? 'bg-pink-500 text-white border-pink-500 shadow-[0_0_10px_rgba(219,39,119,0.4)]'
-                : 'bg-[#282622] hover:bg-gray-200 text-gray-800 border-gray-200 hover:border-pink-500/50'
+                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 hover:border-emerald-400'
             }`}
           >
-            <Lightbulb className={`w-3 h-3 ${isSuggestionsOpen ? 'text-gray-900 fill-current' : 'text-emerald-600'}`} />
+            <Lightbulb className={`w-3 h-3 ${isSuggestionsOpen ? 'text-white fill-current' : 'text-emerald-600'}`} />
             <span>Smart Suggestions & Tokens</span>
           </button>
 
@@ -148,12 +155,12 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading 
             value={prompt}
             onChange={(e) => {
               setPrompt(e.target.value);
-              if (!isSuggestionsOpen && e.target.value.length > 0) {
+              if (!isSuggestionsOpen) {
                 setIsSuggestionsOpen(true);
               }
             }}
             onFocus={() => {
-              if (prompt.length > 0) setIsSuggestionsOpen(true);
+              setIsSuggestionsOpen(true);
             }}
             placeholder="e.g. Dreamy lo-fi hip hop with Rhodes chords, 808 kick and vinyl swing..."
             className="w-full bg-[var(--app-card-1)] text-gray-900 placeholder-[#736a5d] px-3.5 py-2.5 pr-8 rounded-lg border border-gray-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 text-xs font-mono transition-all"
@@ -191,7 +198,11 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading 
           {isLoading ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>Synthesizing Code...</span>
+              <span>
+                {aiProgress && aiProgress.status === 'downloading' 
+                  ? `Downloading Model... ${Math.round(aiProgress.progress * 100)}%` 
+                  : aiProgress?.text || 'Synthesizing Code...'}
+              </span>
             </>
           ) : (
             <>
@@ -232,7 +243,7 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading 
               setSelectedStyle(style);
               setPrompt(`A ${style.toLowerCase()} algorithmic music track with rich layered patterns`);
             }}
-            className="px-2 py-0.5 rounded-md bg-gray-100 hover:bg-[#302c27] text-gray-700 hover:text-pink-600 border border-gray-200 hover:border-pink-500/40 transition-colors text-[10px]"
+            className="px-2 py-0.5 rounded-md bg-gray-100 hover:bg-emerald-50 text-gray-700 hover:text-emerald-700 border border-gray-200 hover:border-emerald-300 transition-colors text-[10px]"
           >
             {style}
           </button>

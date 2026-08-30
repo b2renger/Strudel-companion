@@ -140,14 +140,44 @@ export interface AIExplanationResult {
  * Curated algorithmic variation transformation (e.g., Drop, Breakdown, Euclidean Shift).
  */
 export interface AIVariation {
+  /** Optional unique identifier for tracking */
+  id?: string;
   /** Display title */
   title: string;
   /** Variation category */
-  type: 'drop' | 'breakdown' | 'polyrhythm' | 'harmonic' | 'glitch' | 'chill';
+  type: 'drop' | 'breakdown' | 'polyrhythm' | 'harmonic' | 'glitch' | 'chill' | string;
   /** Explanation of the musical transformation */
   description: string;
   /** Transformed runnable Strudel code */
   code: string;
+  /** Timestamp when created */
+  createdAt?: number;
+}
+
+/**
+ * Saved algorithmic live-coding session snapshot with custom variations, tempo, and metadata.
+ */
+export interface SavedSession {
+  /** Unique session ID */
+  id: string;
+  /** User-assigned or generated name */
+  name: string;
+  /** Primary runnable Strudel code pattern */
+  code: string;
+  /** Target tempo in BPM */
+  bpm: number;
+  /** Musical genre classification */
+  genre: string;
+  /** Search and filtering tags */
+  tags: string[];
+  /** Optional detailed notes / description */
+  description?: string;
+  /** Array of saved performance variations and DJ transitions */
+  variations: AIVariation[];
+  /** Creation timestamp (Unix ms) */
+  createdAt: number;
+  /** Last updated timestamp (Unix ms) */
+  updatedAt: number;
 }
 
 /**
@@ -173,3 +203,48 @@ export interface AudioEngineState {
   /** Any active syntax or audio playback error message */
   errorMessage: string | null;
 }
+
+/**
+ * Supported client-side and cloud AI execution backends.
+ */
+export type AIEngineType = 'webgpu-gemma' | 'chrome-builtin' | 'instant-heuristic' | 'cloud-gemini';
+
+/**
+ * Status of local on-device neural network weights loading / compilation.
+ */
+export type ModelLoadingStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'unsupported';
+
+/**
+ * Progress updates during WebGPU model download and shader compilation.
+ */
+export interface AIEngineProgress {
+  status: ModelLoadingStatus;
+  text: string;
+  progress: number; // 0 to 1
+  loadedBytes?: number;
+  totalBytes?: number;
+  timeElapsed?: number;
+  errorMessage?: string;
+}
+
+/**
+ * AI Worker Request payload types.
+ */
+export interface AIWorkerRequest {
+  id: string;
+  type: 'init' | 'generate' | 'tweak' | 'explain' | 'suggest_variations' | 'fix' | 'unload';
+  modelId?: string;
+  payload?: any;
+}
+
+/**
+ * AI Worker Response payload types.
+ */
+export interface AIWorkerResponse {
+  id: string;
+  type: 'progress' | 'ready' | 'result' | 'stream_token' | 'error';
+  progress?: AIEngineProgress;
+  data?: any;
+  error?: string;
+}
+

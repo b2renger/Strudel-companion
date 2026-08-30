@@ -550,6 +550,105 @@ export function parseStrudelCodeToTokens(code: string): ParseResult {
 }
 
 /**
+ * Accurately find the exact start and end position of a token within current code
+ */
+export function findTokenExactRange(
+  code: string,
+  token: StrudelToken
+): { start: number; end: number } {
+  if (!token) return { start: 0, end: 0 };
+
+  // 1. Direct index check
+  if (
+    typeof token.startIndex === 'number' &&
+    typeof token.endIndex === 'number' &&
+    token.startIndex >= 0 &&
+    token.endIndex <= code.length &&
+    code.substring(token.startIndex, token.endIndex) === token.raw
+  ) {
+    return { start: token.startIndex, end: token.endIndex };
+  }
+
+  // 2. Search locally near original position (window of 150 chars)
+  const targetRaw = token.raw;
+  if (!targetRaw) {
+    return {
+      start: Math.max(0, token.startIndex || 0),
+      end: Math.max(0, token.endIndex || 0),
+    };
+  }
+
+  const searchRadius = 150;
+  const searchStart = Math.max(0, (token.startIndex || 0) - searchRadius);
+  const searchEnd = Math.min(code.length, (token.endIndex || 0) + searchRadius);
+  const localWindow = code.substring(searchStart, searchEnd);
+  const localOffset = localWindow.indexOf(targetRaw);
+
+  if (localOffset !== -1) {
+    const actualStart = searchStart + localOffset;
+    return { start: actualStart, end: actualStart + targetRaw.length };
+  }
+
+  // 3. Fallback: Search globally in code
+  const globalOffset = code.indexOf(targetRaw);
+  if (globalOffset !== -1) {
+    return { start: globalOffset, end: globalOffset + targetRaw.length };
+  }
+
+  return {
+    start: Math.max(0, token.startIndex || 0),
+    end: Math.max(0, token.endIndex || 0),
+  };
+}
+
+/**
+ * Check if a token position is inside pattern notation quotes on its line
+ */
+function getPatternQuoteContext(code: string, tokenStart: number, tokenEnd: number) {
+  const lineStart = Math.max(0, code.lastIndexOf('\n', tokenStart - 1) + 1);
+  const nextNewline = code.indexOf('\n', tokenEnd);
+  const lineEnd = nextNewline === -1 ? code.length : nextNewline;
+  const lineText = code.substring(lineStart, lineEnd);
+
+  const relStart = tokenStart - lineStart;
+  const relEnd = tokenEnd - lineStart;
+
+  // Scan quotes on this line
+  const quoteSpans: { open: number; close: number; quoteChar: string }[] = [];
+  let currentOpen: { pos: number; char: string } | null = null;
+
+  for (let idx = 0; idx < lineText.length; idx++) {
+    const ch = lineText[idx];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      if (currentOpen && currentOpen.char === ch) {
+        quoteSpans.push({ open: currentOpen.pos, close: idx, quoteChar: ch });
+        currentOpen = null;
+      } else if (!currentOpen) {
+        currentOpen = { pos: idx, char: ch };
+      }
+    }
+  }
+
+  // Find if token is inside a quote span
+  const enclosing = quoteSpans.find(
+    (span) => relStart >= span.open && relEnd <= span.close + 1
+  );
+
+  return {
+    lineStart,
+    lineEnd,
+    lineText,
+    isInsideQuotes: Boolean(enclosing),
+    quoteOpenAbs: enclosing ? lineStart + enclosing.open : -1,
+    quoteCloseAbs: enclosing ? lineStart + enclosing.close : -1,
+    lastQuoteCloseAbs:
+      quoteSpans.length > 0
+        ? lineStart + quoteSpans[quoteSpans.length - 1].close
+        : -1,
+  };
+}
+
+/**
  * Replace a token inside the code and return the updated code string
  */
 export function replaceTokenInCode(
@@ -557,9 +656,9 @@ export function replaceTokenInCode(
   token: StrudelToken,
   newValue: string
 ): string {
-  if (!token || typeof token.startIndex !== 'number' || typeof token.endIndex !== 'number') {
-    return originalCode;
-  }
+  if (!token) return originalCode;
+
+  const { start, end } = findTokenExactRange(originalCode, token);
   
   // Clean parameter quotes if replacing a bank or string parameter
   let valueToInsert = newValue;
@@ -569,7 +668,270 @@ export function replaceTokenInCode(
     valueToInsert = `'${valueToInsert}'`;
   }
 
-  const before = originalCode.substring(0, token.startIndex);
-  const after = originalCode.substring(token.endIndex);
+  const before = originalCode.substring(0, start);
+  const after = originalCode.substring(end);
   return before + valueToInsert + after;
+}
+
+/**
+ * Insert a block of choice behind/after any specific token in the Strudel code
+ */
+export function insertBlockBehindTokenInCode(
+  originalCode: string,
+  token: StrudelToken | null,
+  blockToInsert: string
+): string {
+  const trimmedBlock = blockToInsert.trim();
+  if (!trimmedBlock) return originalCode;
+
+  if (!token) {
+    // If no token target, check if we should append as a new layer or line
+    if (trimmedBlock.startsWith('.')) {
+      // Append method to the last non-empty line
+      return originalCode + trimmedBlock;
+    }
+    return originalCode + (originalCode.endsWith('\n') ? '' : '\n') + `s("${trimmedBlock}")`;
+  }
+
+  const { start, end } = findTokenExactRange(originalCode, token);
+  const isMethod = trimmedBlock.startsWith('.');
+  const ctx = getPatternQuoteContext(originalCode, start, end);
+
+  if (isMethod) {
+    // Method/Effect insertion (e.g. .lpf(1200) or .gain(0.8))
+    if (ctx.isInsideQuotes) {
+      // Find the closing quote and parent method closing parenthesis: e.g. s("bd sd") -> s("bd sd").lpf(1200)
+      const afterQuote = originalCode.substring(ctx.quoteCloseAbs + 1);
+      const nextParenRel = afterQuote.indexOf(')');
+      if (nextParenRel !== -1) {
+        const insertPos = ctx.quoteCloseAbs + 1 + nextParenRel + 1;
+        return (
+          originalCode.substring(0, insertPos) +
+          trimmedBlock +
+          originalCode.substring(insertPos)
+        );
+      }
+    }
+
+    // If token is a method or parameter (e.g. .gain(0.8)), find closing paren of this method call
+    if (token.type === 'method' || token.type === 'param' || !ctx.isInsideQuotes) {
+      const textAfterToken = originalCode.substring(end);
+      const nextParenRel = textAfterToken.indexOf(')');
+      if (nextParenRel !== -1) {
+        const insertPos = end + nextParenRel + 1;
+        return (
+          originalCode.substring(0, insertPos) +
+          trimmedBlock +
+          originalCode.substring(insertPos)
+        );
+      }
+    }
+
+    // Direct insertion behind token
+    return (
+      originalCode.substring(0, end) +
+      trimmedBlock +
+      originalCode.substring(end)
+    );
+  }
+
+  // Mini-notation element insertion (sample, note, rhythm modifier, chord, rest)
+  if (ctx.isInsideQuotes) {
+    // If it is a modifier that binds directly to the previous token (e.g., *4, /2, (3,8), @2, ?)
+    const isDirectModifier =
+      trimmedBlock.startsWith('*') ||
+      trimmedBlock.startsWith('/') ||
+      trimmedBlock.startsWith('(') ||
+      trimmedBlock.startsWith('@') ||
+      trimmedBlock === '?';
+
+    if (isDirectModifier) {
+      return (
+        originalCode.substring(0, end) +
+        trimmedBlock +
+        originalCode.substring(end)
+      );
+    }
+
+    // Normal note, sample, chord, or rest token: insert with leading space
+    return (
+      originalCode.substring(0, end) +
+      ' ' +
+      trimmedBlock +
+      originalCode.substring(end)
+    );
+  }
+
+  // If outside quotes on a line with quotes, insert inside the last quote of that line
+  if (ctx.lastQuoteCloseAbs !== -1) {
+    return (
+      originalCode.substring(0, ctx.lastQuoteCloseAbs) +
+      ' ' +
+      trimmedBlock +
+      originalCode.substring(ctx.lastQuoteCloseAbs)
+    );
+  }
+
+  // If line has no quotes (e.g. stack(...) or custom variable), wrap or append cleanly
+  return (
+    originalCode.substring(0, end) +
+    ' ' +
+    trimmedBlock +
+    originalCode.substring(end)
+  );
+}
+
+/**
+ * Insert a block at the end of a specific line or layer
+ */
+export function insertBlockAtLineInCode(
+  originalCode: string,
+  lineNumber: number,
+  blockToInsert: string
+): string {
+  const trimmedBlock = blockToInsert.trim();
+  if (!trimmedBlock) return originalCode;
+
+  const lines = originalCode.split('\n');
+  const targetIdx = Math.max(0, Math.min(lines.length - 1, lineNumber - 1));
+  const line = lines[targetIdx] || '';
+
+  if (trimmedBlock.startsWith('.')) {
+    // Append method to the end of the line before any trailing comma
+    if (line.endsWith(',')) {
+      lines[targetIdx] = line.slice(0, -1) + trimmedBlock + ',';
+    } else {
+      lines[targetIdx] = line + trimmedBlock;
+    }
+  } else {
+    // Mini-notation token: insert inside quotes if present
+    const lastQuote = line.lastIndexOf('"');
+    const lastSingleQuote = line.lastIndexOf("'");
+    const quoteIdx = Math.max(lastQuote, lastSingleQuote);
+
+    if (quoteIdx !== -1) {
+      lines[targetIdx] =
+        line.substring(0, quoteIdx) +
+        ' ' +
+        trimmedBlock +
+        line.substring(quoteIdx);
+    } else {
+      // If line is empty or doesn't have pattern quotes, wrap in s("...")
+      if (line.trim().length === 0) {
+        lines[targetIdx] = `s("${trimmedBlock}")`;
+      } else {
+        lines[targetIdx] = line + ` .s("${trimmedBlock}")`;
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Remove any selected token/block from Strudel code cleanly
+ */
+export function removeBlockInCode(
+  originalCode: string,
+  token: StrudelToken
+): string {
+  if (!token) return originalCode;
+
+  const { start, end } = findTokenExactRange(originalCode, token);
+  const ctx = getPatternQuoteContext(originalCode, start, end);
+
+  // 1. If removing a method/effect (e.g. .lpf(1200), .gain(0.8))
+  if (token.type === 'method' || token.category.startsWith('effect_')) {
+    // Find leading dot
+    const beforeToken = originalCode.substring(0, start);
+    const dotIdx = beforeToken.lastIndexOf('.');
+    const nextParenRel = originalCode.substring(end).indexOf(')');
+
+    if (dotIdx !== -1 && nextParenRel !== -1) {
+      const methodStart = dotIdx;
+      const methodEnd = end + nextParenRel + 1;
+      return (
+        originalCode.substring(0, methodStart) +
+        originalCode.substring(methodEnd)
+      );
+    }
+  }
+
+  // 2. If removing a parameter inside a method call (e.g. 1200 in .lpf(1200))
+  if (token.type === 'param') {
+    // Check if it's the only argument of its method; remove the whole method
+    const beforeToken = originalCode.substring(0, start);
+    const dotIdx = beforeToken.lastIndexOf('.');
+    const nextParenRel = originalCode.substring(end).indexOf(')');
+    if (dotIdx !== -1 && nextParenRel !== -1) {
+      const methodStart = dotIdx;
+      const methodEnd = end + nextParenRel + 1;
+      return (
+        originalCode.substring(0, methodStart) +
+        originalCode.substring(methodEnd)
+      );
+    }
+  }
+
+  // 3. If inside mini-notation quotes (samples, notes, rhythms, rests, chords)
+  if (ctx.isInsideQuotes) {
+    let removeStart = start;
+    let removeEnd = end;
+
+    // Check surrounding whitespace within the quote
+    const beforeChar = start > ctx.quoteOpenAbs + 1 ? originalCode[start - 1] : '';
+    const afterChar = end < ctx.quoteCloseAbs ? originalCode[end] : '';
+
+    if (beforeChar === ' ' && afterChar === ' ') {
+      // "bd  sd" -> take leading space
+      removeStart = start - 1;
+    } else if (beforeChar === ' ') {
+      removeStart = start - 1;
+    } else if (afterChar === ' ') {
+      removeEnd = end + 1;
+    }
+
+    let updated =
+      originalCode.substring(0, removeStart) +
+      originalCode.substring(removeEnd);
+
+    // If the quotes are now completely empty, leave a rest ~ or clean space
+    const updatedLineStart = Math.max(0, updated.lastIndexOf('\n', start - 1) + 1);
+    const updatedLineEnd = updated.indexOf('\n', start) === -1 ? updated.length : updated.indexOf('\n', start);
+    const updatedLine = updated.substring(updatedLineStart, updatedLineEnd);
+
+    // Clean any accidental duplicate spaces inside quotes
+    const cleanedLine = updatedLine.replace(/"\s*"/g, '"~"').replace(/'\s*'/g, "'~'");
+    if (cleanedLine !== updatedLine) {
+      updated =
+        updated.substring(0, updatedLineStart) +
+        cleanedLine +
+        updated.substring(updatedLineEnd);
+    }
+
+    return updated;
+  }
+
+  // 4. Default fallback: remove raw slice
+  return originalCode.substring(0, start) + originalCode.substring(end);
+}
+
+/**
+ * Remove an entire layer / line from the code
+ */
+export function removeLayerInCode(
+  originalCode: string,
+  lineNumber: number
+): string {
+  const lines = originalCode.split('\n');
+  const targetIdx = Math.max(0, Math.min(lines.length - 1, lineNumber - 1));
+
+  lines.splice(targetIdx, 1);
+
+  // If all lines were deleted, return a default silent groove or kick
+  if (lines.length === 0 || lines.every((l) => l.trim().length === 0)) {
+    return 's("~")';
+  }
+
+  return lines.join('\n');
 }

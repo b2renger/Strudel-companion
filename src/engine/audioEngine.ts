@@ -12,6 +12,7 @@ export interface EvalEvent {
   layersCount: number;
   bpm: number;
   success: boolean;
+  code?: string;
   error?: string;
 }
 
@@ -231,6 +232,7 @@ class StrudelAudioEngine {
         layersCount: this.parsedLayers.length,
         bpm: this.bpm,
         success: true,
+        code,
       });
       return { success: true };
     } catch (err: any) {
@@ -241,6 +243,7 @@ class StrudelAudioEngine {
         layersCount: 0,
         bpm: this.bpm,
         success: false,
+        code,
         error: err.message || 'Syntax error evaluating pattern',
       });
       return { success: false, error: err.message || 'Syntax error evaluating pattern' };

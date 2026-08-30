@@ -26,6 +26,54 @@ export interface SuggestionItem {
 export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
   // Full Compositions
   {
+    id: 'amapiano-logdrum',
+    category: 'Full Composition',
+    title: 'Amapiano Log-Drum & Gospel Keys (113 BPM)',
+    description: 'Syncopated log-drum bassline with cabasa polyrhythms, rim accents, and lush piano 9th chords.',
+    promptText: 'Deep South African Amapiano groove at 113 BPM with heavy percussive log drum bass, syncopated cabasa shaker, and gospel piano chords',
+    tags: ['Amapiano', 'Afrobeat', 'Log Drum', '113 BPM', 'Percussive'],
+  },
+  {
+    id: 'koto-zen',
+    category: 'Full Composition',
+    title: 'Japanese Koto & Hirajoshi Zen Garden (76 BPM)',
+    description: 'Serene meditative composition in the traditional 5-note Hirajoshi scale with singing bowl sub drone.',
+    promptText: 'Meditative Japanese Zen ambient in Hirajoshi pentatonic scale with delicate Koto plucks, singing bowl sub drone, and spacious temple reverb',
+    tags: ['Japanese', 'Koto', 'Hirajoshi', 'Zen', 'Ambient', 'Meditation'],
+  },
+  {
+    id: 'chiptune-8bit',
+    category: 'Full Composition',
+    title: '8-Bit Retro Chiptune & Arcade Plucks (140 BPM)',
+    description: 'Blistering GameBoy/NES square wave arpeggios, noise kick/snare, and retro melody.',
+    promptText: 'Energetic 8-bit retro arcade Chiptune at 140 BPM with fast square wave arpeggiations, crunchy noise drums, and playful bassline',
+    tags: ['8-Bit', 'Chiptune', 'Arcade', 'Retro', 'Square Wave', '140 BPM'],
+  },
+  {
+    id: 'bossa-jazz',
+    category: 'Full Composition',
+    title: 'Ipanema Sunset Bossa Nova (124 BPM)',
+    description: 'Syncopated Brazilian cross-stick rim clave, acoustic walking bass, and lush jazz chords.',
+    promptText: 'Smooth Bossa Nova at 124 BPM with syncopated rimshot clave, warm walking acoustic bass, and extended minor 9th jazz chord voicings',
+    tags: ['Bossa Nova', 'Latin', 'Jazz', 'Clave', 'Acoustic', '124 BPM'],
+  },
+  {
+    id: 'mathrock-7-8',
+    category: 'Full Composition',
+    title: 'Math Rock 7/8 Polymetric Phasing (130 BPM)',
+    description: 'Irregular meter cross-rhythms with clean melodic guitar plucks and phased syncopation.',
+    promptText: 'Complex Math Rock groove in 7/8 time signature with clean polyrhythmic guitar plucks, syncopated drums, and melodic bass',
+    tags: ['Math Rock', '7/8', 'Polymeter', 'Odd Meter', 'Intricate'],
+  },
+  {
+    id: 'footwork-160',
+    category: 'Full Composition',
+    title: 'Chicago Footwork / Juke (160 BPM)',
+    description: 'High-speed syncopated tom matrix with rapid triplet claps and sub 808 bass stabs.',
+    promptText: 'High-energy Chicago Footwork at 160 BPM with syncopated triplet tom patterns, rapid fire claps, and sub 808 bass stabs',
+    tags: ['Footwork', 'Juke', '160 BPM', 'Fast', 'Syncopated', '808'],
+  },
+  {
     id: 'acid-techno',
     category: 'Full Composition',
     title: '303 Acid Techno Rave (138 BPM)',
@@ -241,28 +289,41 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
     const genres = [
       'Lo-Fi jazzy chillhop',
       'High-energy Acid 303 Techno at 138 BPM',
-      'Skippy 2-step UK Garage',
-      '80s Outrun Synthwave',
-      'Generative Ambient drone',
+      'Skippy 2-step UK Garage at 132 BPM',
+      '80s Outrun Synthwave with analog brass',
+      'Generative Ambient drone with temple bells',
       'Deep Melodic House',
       'Chopped Jungle DnB at 165 BPM',
+      'South African Amapiano with syncopated log drums at 113 BPM',
+      'Meditative Japanese Zen ambient in Hirajoshi scale',
+      'Fast 8-bit arcade Chiptune with square wave arpeggios at 140 BPM',
+      'Warm Bossa Nova jazz at 124 BPM with syncopated rimshot clave',
+      'Math Rock 7/8 polymetric phasing at 130 BPM',
+      'Chicago Footwork / Juke at 160 BPM with triplet toms',
     ];
     const rhythms = [
       'with Euclidean (5,8) hi-hat polyrhythm and ghost snares',
       'with 4-on-the-floor kick and skippy syncopation',
       'with half-time trap snare drops and alternating hi-hat rolls',
       'with polymetric 3-against-4 cross-rhythms',
+      'with syncopated cabasa shaker and percussive rim clicks',
+      'with broken Amen break chopped rolls and crash cymbals',
     ];
     const synths = [
       'warm Rhodes electric piano chords and sub bass',
       'resonant squelchy sawtooth synth arpeggios',
       'lush supersaw pads and analog pluck lead',
       'deep FM bells and evolving sub drone',
+      'delicate acoustic Koto plucks and singing bowl resonance',
+      'bouncy square wave 8-bit arpeggios and punchy bass',
+      'minor 11th jazz piano voicings and walking bass',
     ];
     const fx = [
       'with ping-pong tape delay and lush room reverb',
       'with dynamic low-pass filter cutoff sweeps',
       'with vintage vinyl warmth and subtle swing',
+      'with resonant 303 filter sweeps and stereo spread',
+      'with deep spatial temple reverberation',
     ];
 
     const randomGenre = genres[Math.floor(Math.random() * genres.length)];
