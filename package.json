@@ -10,7 +10,8 @@
     "test": "esbuild test/run.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/test.mjs --log-level=warning && node node_modules/.tmp/test.mjs",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "verify:pwa": "node scripts/verify-pwa.mjs"
+    "verify:pwa": "node scripts/verify-pwa.mjs",
+    "corpus": "esbuild scripts/generate-corpus.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/corpus.mjs --log-level=warning && node node_modules/.tmp/corpus.mjs"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.84",

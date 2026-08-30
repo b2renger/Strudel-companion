@@ -1,0 +1,5 @@
+# Pinned loosely: any recent version works, and the model is small enough that
+# nothing here is version-sensitive.
+torch>=2.2
+transformers>=4.44
+tokenizers>=0.19

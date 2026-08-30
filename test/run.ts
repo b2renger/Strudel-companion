@@ -54,6 +54,26 @@ import {
 import { completionIsDone } from '../src/ai/streamStop.ts';
 import { isTransientLoadError, describeLoadFailure } from '../src/ai/modelLoadErrors.ts';
 import { WEBGPU_MODELS, DEFAULT_MODEL_ID, smallestModelFor } from '../src/ai/models.ts';
+import {
+  VOCABULARY,
+  VOCAB_SIZE,
+  GENRE_TOKENS,
+  encode,
+  decode,
+  encodeSample,
+  isFullyCovered,
+  bpmToken,
+  tokenId,
+  UNK_ID,
+  BOS_ID,
+  EOS_ID,
+} from '../src/ml/tokenizer.ts';
+import {
+  STRUDEL_MODEL_CONFIG,
+  parameterCount,
+  parameterBreakdown,
+  estimateBytes,
+} from '../src/ml/modelConfig.ts';
 import { prebuiltAppConfig } from '@mlc-ai/web-llm';
 import { clamp } from '../src/engine/audioEngine.ts';
 import {
@@ -1352,6 +1372,123 @@ test("a reasoning model's thinking block does not reach the parser", () => {
 
 test('a reply cut off inside a thinking block yields nothing', () => {
   assert.equal(extractCodeBlock('<think>\nLet me consider stack(s("bd*4"))  and'), null);
+});
+
+// ---------------------------------------------------------------------------
+// The Strudel-only tokenizer.
+//
+// Two properties carry the whole small-model argument. If either fails, a model
+// trained on this corpus could not be served: it would be generating something
+// that does not decode back into code.
+// ---------------------------------------------------------------------------
+
+test('the tokenizer round-trips every pattern the composer can produce', () => {
+  let checked = 0;
+  for (const genre of PROCEDURAL_GENRES) {
+    for (let seed = 0; seed < 25; seed++) {
+      const code = sanitizeGeneratedCode(composeTrack(genre, undefined, seed).code).code.trim();
+      const ids = encode(code);
+      assert.equal(decode(ids), code, `round-trip failed for ${genre}#${seed}`);
+      assert.ok(!ids.includes(UNK_ID), `unknown token in ${genre}#${seed}`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 300, `only ${checked} patterns checked`);
+});
+
+test('the tokenizer round-trips every variation too', () => {
+  const base = sanitizeGeneratedCode(composeTrack('acid', undefined, 3).code).code;
+  for (let seed = 0; seed < 20; seed++) {
+    for (const v of buildHeuristicVariations(base, '', 4, seed)) {
+      assert.equal(decode(encode(v.code)), v.code, `round-trip failed for "${v.title}"`);
+      assert.ok(isFullyCovered(v.code), `not covered: "${v.title}"`);
+    }
+  }
+});
+
+test('coverage actually fails for something outside the vocabulary', () => {
+  // Otherwise the check above proves nothing.
+  assert.equal(isFullyCovered('s("bd*4").reverbulate(9)'), false);
+  assert.ok(encode('日本語').includes(UNK_ID));
+  assert.equal(isFullyCovered('s("bd*4")'), true);
+});
+
+test('the vocabulary is small enough for the size argument to hold', () => {
+  const real = VOCABULARY.filter((t) => !t.startsWith('<reserved:')).length;
+  assert.ok(real < VOCAB_SIZE, `${real} tokens fills all ${VOCAB_SIZE} slots, leaving no room`);
+  // The point of the exercise: Qwen2.5-0.5B carries 151,936 tokens, which is
+  // ~28% of its parameters and why it is 945 MB on disk.
+  assert.ok(VOCAB_SIZE <= 512, `vocabulary of ${VOCAB_SIZE} defeats the purpose`);
+  assert.equal(VOCABULARY.length, VOCAB_SIZE, 'the table must be exactly the tensor width');
+  assert.equal(new Set(VOCABULARY).size, VOCAB_SIZE, 'duplicate token in the vocabulary');
+});
+
+test('every sound the engine can play has a token', () => {
+  // A drum with no token is a pattern the model can never write.
+  for (const drum of [...DRUM_VOICES, ...SYNTH_VOICES]) {
+    assert.ok(tokenId(drum) !== undefined, `no token for "${drum}"`);
+  }
+});
+
+test('the genre tokens still match the composer', () => {
+  // The token list is written out so ids stay stable across checkpoints; this
+  // is what stops it drifting away from the composer it describes.
+  assert.deepEqual([...GENRE_TOKENS].sort(), [...PROCEDURAL_GENRES].sort());
+});
+
+test('a training sample is framed with its conditioning', () => {
+  const ids = encodeSample(
+    { genre: 'acid', bpm: 131, complexity: 'advanced' },
+    'stack(\n  s("bd*4")\n)',
+  );
+  assert.equal(ids[0], BOS_ID);
+  assert.equal(ids[ids.length - 1], EOS_ID);
+  assert.equal(ids[1], tokenId('<genre:acid>'));
+  // 131 is not a bucket; it must snap to the nearest one that exists.
+  assert.equal(ids[2], tokenId('<bpm:130>'));
+  assert.equal(ids[3], tokenId('<complexity:advanced>'));
+  assert.equal(decode(ids), 'stack(\n  s("bd*4")\n)', 'control tokens leaked into the text');
+});
+
+test('a tempo outside the bucket range is clamped, not dropped', () => {
+  assert.equal(bpmToken(20), '<bpm:60>');
+  assert.equal(bpmToken(400), '<bpm:200>');
+  assert.equal(bpmToken(128), '<bpm:130>');
+  for (const bpm of [60, 90, 118, 137, 174, 200]) {
+    assert.ok(tokenId(bpmToken(bpm)) !== undefined, `no bucket near ${bpm}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+
+test('the model is the size the documentation claims', () => {
+  const b = parameterBreakdown();
+  // Recomputed here rather than trusted: these numbers are the entire reason
+  // for preferring a custom model over a 580 MB general one.
+  const c = STRUDEL_MODEL_CONFIG;
+  assert.equal(b.embedding, c.vocabSize * c.hiddenSize);
+  assert.equal(b.mlpPerLayer, 3 * c.hiddenSize * c.intermediateSize);
+  assert.equal(b.allLayers, b.perLayer * c.numLayers);
+  assert.equal(b.lmHead, 0, 'embeddings should be tied');
+  assert.equal(b.total, b.embedding + b.allLayers + b.finalNorm);
+
+  assert.ok(b.total > 4_000_000 && b.total < 6_000_000, `${b.total} parameters is off-plan`);
+  const fp16 = estimateBytes(b.total, 'fp16');
+  assert.ok(fp16 < 12 * 1024 * 1024, `${fp16} bytes at fp16 is too big to precache`);
+  assert.ok(estimateBytes(b.total, 'q4f16_1') < 4 * 1024 * 1024);
+});
+
+test('the parameter count responds to the architecture', () => {
+  // Guards against the count being a constant dressed up as arithmetic.
+  const doubled = parameterCount({ ...STRUDEL_MODEL_CONFIG, numLayers: 12 });
+  const single = parameterCount({ ...STRUDEL_MODEL_CONFIG, numLayers: 6 });
+  assert.ok(doubled > single * 1.9, 'doubling the layers barely changed the count');
+
+  const bigVocab = parameterCount({ ...STRUDEL_MODEL_CONFIG, vocabSize: 151936 });
+  assert.ok(
+    bigVocab > single * 8,
+    'a 152k vocabulary should dominate — that is the whole point',
+  );
 });
 
 // ---------------------------------------------------------------------------
