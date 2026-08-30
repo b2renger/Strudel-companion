@@ -25,11 +25,16 @@ import {
 import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
 import {
   buildCompactGeneratePrompt,
+  buildCompactTweakPrompt,
+  buildExplainPrompt,
+  buildFixPrompt,
   buildGeneratePrompt,
+  buildTweakPrompt,
   withSystemPrompt,
   STRUDEL_SYNTAX_CARD,
   STRUDEL_SYSTEM_PROMPT,
 } from '../src/ai/prompts.ts';
+import { STARTER_PRESETS } from '../src/data/presets.ts';
 import {
   parseStrudelCodeToTokens,
   findTokenExactRange,
@@ -626,6 +631,49 @@ test('no prompt asks the model to write comments', () => {
   assert.ok(!/TWEAK TIP/.test(all), 'a prompt still asks for TWEAK TIP comments');
   assert.ok(/NEVER write comments|NEVER write a comment/.test(STRUDEL_SYSTEM_PROMPT));
   assert.ok(/NEVER write a comment/.test(STRUDEL_SYNTAX_CARD));
+});
+
+test('the validator rejects a non-numeric Euclid rhythm with a readable message', () => {
+  const v = validateStructure('stack(s("bd*4"), s("shaker(e,i)"))');
+  assert.equal(v.ok, false);
+  assert.ok(/whole numbers/i.test(v.error!), `unhelpful message: ${v.error}`);
+  // It must NOT be the raw engine exception the user was actually shown.
+  assert.ok(!/invalid array length/i.test(v.error!));
+});
+
+test('the validator accepts every Euclid rhythm the presets and composer use', () => {
+  for (const good of [
+    'stack(s("bd(3,8)"))',
+    'stack(s("hh(5,8,2)"))',
+    'stack(s("bd(3,8)"), note("<c2 eb2>").s("sawtooth"))',
+    'stack(s("bd*4, [~ cp]*2"))',
+  ]) {
+    const v = validateStructure(good);
+    assert.equal(v.ok, true, `${good} -> ${v.error}`);
+  }
+});
+
+test('patterns quoted into a prompt have their comments removed', () => {
+  // The starter presets and the procedural composer both write
+  // "// TWEAK TIP:" comments. Quoting them showed the model the exact
+  // same-line comment form the system prompt forbids two paragraphs earlier.
+  const withComments = 'stack(\n  s("bd*4"), // TWEAK TIP: try bd*8\n  s("hh*8")\n)';
+  for (const built of [
+    buildTweakPrompt(withComments, 'make it darker'),
+    buildCompactTweakPrompt(withComments, 'make it darker'),
+    buildFixPrompt(withComments, 'some error'),
+    buildExplainPrompt(withComments),
+  ]) {
+    assert.ok(!built.includes('TWEAK TIP'), 'a comment was quoted back to the model');
+    assert.ok(built.includes('bd*4'), 'the pattern itself was damaged');
+  }
+});
+
+test('every starter preset survives the validator', () => {
+  for (const preset of STARTER_PRESETS) {
+    const v = validateStructure(preset.code);
+    assert.equal(v.ok, true, `${preset.title}: ${v.error}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

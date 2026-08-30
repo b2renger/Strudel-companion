@@ -103,6 +103,23 @@ export function validateStructure(code: string): ValidationResult {
     return { ok: false, error: `Missing "${closer}" — a "${missing}" was never closed.` };
   }
 
+  // Euclid arguments must be whole numbers. `s("shaker(e,i)")` reached
+  // Strudel's own transpiler and came back as `RangeError: Invalid array
+  // length`, which is what the user was shown as the error message.
+  for (const m of withoutComments.matchAll(/(["'`])([^"'`]*)\1/g)) {
+    for (const call of m[2].matchAll(/([a-zA-Z_~][a-zA-Z0-9_]*)\(([^)]*)\)/g)) {
+      const args = call[2].split(',').map((a) => a.trim());
+      if (!args.every((a) => /^-?\d+$/.test(a))) {
+        return {
+          ok: false,
+          error:
+            `"${call[1]}(${call[2]})" is not a valid Euclidean rhythm — ` +
+            'the numbers in brackets must be whole numbers, like bd(3,8).',
+        };
+      }
+    }
+  }
+
   if (!/(?:^|[\s,(])(?:stack|s|n|note|sound)\s*\(/m.test(withoutComments)) {
     return {
       ok: false,
@@ -136,6 +153,16 @@ export function validatePattern(code: string): ValidationResult {
 /** Strudel's parser messages are terse; give them a little context. */
 function cleanTranspilerMessage(message: string): string {
   const trimmed = message.replace(/^.*?Error:\s*/i, '').trim();
+
+  // A RangeError from inside the transpiler is not a message for a musician.
+  // `s("shaker(e,i)")` produced literally `Invalid array length`, which tells
+  // the user nothing about what to change.
+  if (/invalid array length|maximum call stack|out of memory/i.test(trimmed)) {
+    return (
+      'Strudel choked on this pattern — usually a bracketed rhythm with ' +
+      'something other than whole numbers in it, like bd(e,i) instead of bd(3,8).'
+    );
+  }
   if (/unexpected|expected/i.test(trimmed)) {
     return `Strudel could not parse this: ${trimmed}`;
   }

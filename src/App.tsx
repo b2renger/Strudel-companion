@@ -197,6 +197,10 @@ export default function App() {
 
   // Load a Saved Session
   const handleLoadSession = (session: SavedSession) => {
+    logEvent(
+      'user',
+      `LOAD session — "${session.name}" (${session.bpm} BPM, ${session.variations?.length ?? 0} variations)`,
+    );
     setCurrentTrack({
       id: session.id,
       title: session.name,
@@ -224,6 +228,7 @@ export default function App() {
 
   // Load a single variation directly into the editor
   const handleLoadVariation = (variationCode: string, title: string) => {
+    logEvent('user', `LOAD variation — "${title}"`);
     setCode(variationCode);
     const evalRes = audioEngine.evaluate(variationCode);
     if (evalRes.success) {
@@ -267,6 +272,7 @@ export default function App() {
 
   // Add custom user variation snapshot
   const handleAddCustomVariation = (title: string, customCode: string) => {
+    logEvent('user', `ADD custom variation — "${title}"`);
     const customVar: AIVariation = {
       id: 'var-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       title,
@@ -482,6 +488,10 @@ export default function App() {
 
   // Apply a variation immediately
   const handleApplyVariation = (variationCode: string) => {
+    // Unlogged, this produced `EVALUATED OK` lines in the session trace with
+    // no user action to explain them — thirteen of them in one session, which
+    // made the trace look like the app was evaluating patterns by itself.
+    logEvent('user', `APPLY variation — ${variationCode.split('\n').length} lines`);
     setCode(variationCode);
     const evalRes = audioEngine.evaluate(variationCode);
     if (evalRes.success) {
@@ -588,8 +598,12 @@ export default function App() {
             </button>
             <button
               onClick={() => {
-                if (isPlaying) handleTogglePlay();
+                // Was `if (isPlaying) handleTogglePlay(); audioEngine.hush();`
+                // — handleTogglePlay already hushes, so this ran hush twice
+                // and logged the click as "CLICK Stop".
+                logEvent('user', 'CLICK Hush');
                 audioEngine.hush();
+                setIsPlaying(false);
               }}
               className="px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg hover:bg-gray-200 text-gray-700 hover:text-gray-900 text-sm font-mono flex items-center gap-1.5 transition-colors uppercase"
             >
@@ -665,6 +679,7 @@ export default function App() {
             {codeBeforeAI !== null && codeBeforeAI !== code && (
               <button
                 onClick={() => {
+                  logEvent('user', 'CLICK Undo — restoring the pattern from before the AI edit');
                   setCode(codeBeforeAI);
                   setCodeBeforeAI(null);
                   setResultSource(null);
@@ -691,6 +706,7 @@ export default function App() {
               onChange={handleCodeChange}
               onEvaluate={handleEvaluateAndPlay}
               onHush={() => {
+                logEvent('user', 'CLICK Hush (editor)');
                 audioEngine.hush();
                 setIsPlaying(false);
               }}

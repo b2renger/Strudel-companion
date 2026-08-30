@@ -1356,6 +1356,34 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         </div>
       )}
 
+      {/* Silent-layer warning.
+
+          Distinct from the error banner on purpose: the pattern IS valid and
+          IS playing, but part of it makes no sound. This case used to be
+          completely invisible — `s("rhodes")` and `s("sine")` were counted as
+          layers, logged as "EVALUATED OK", and produced nothing, so the only
+          symptom was music that felt emptier than the code looked. */}
+      {!errorMessage &&
+        lastEvalEvent?.success &&
+        (lastEvalEvent.silentTokens?.length ?? 0) > 0 && (
+          <div
+            role="status"
+            className="bg-amber-50 border-t border-amber-300 px-3 py-2 flex items-start gap-2 text-xs"
+          >
+            <span className="w-1.5 h-1.5 mt-1.5 shrink-0 rounded-full bg-amber-500" />
+            <span className="font-bold text-[10px] uppercase shrink-0 mt-0.5 text-amber-800">
+              Silent:
+            </span>
+            <span className="text-amber-900 text-[11px] break-words">
+              {lastEvalEvent.silentTokens!.join(', ')}{' '}
+              {lastEvalEvent.silentTokens!.length === 1 ? 'is not a sound' : 'are not sounds'} this
+              engine can play, so {lastEvalEvent.silentTokens!.length === 1 ? 'it makes' : 'they make'}{' '}
+              no noise. Drums go in <code className="font-mono">s("…")</code>; pitched voices go in{' '}
+              <code className="font-mono">note("…").s("…")</code>.
+            </span>
+          </div>
+        )}
+
       {/* Token Inspector & Value Modal */}
       <TokenInspectorModal
         isOpen={isInspectorOpen}

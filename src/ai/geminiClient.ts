@@ -27,7 +27,7 @@
  * and are gone: the first is shut down, the second is not a documented
  * endpoint.
  */
-import { log, error as logError, timer, group, preview, estimateTokens } from './diagnostics';
+import { log, event, error as logError, timer, group, preview, estimateTokens } from './diagnostics';
 
 export const GEMINI_MODEL_CHAIN = [
   'gemini-3.6-flash',
@@ -36,7 +36,17 @@ export const GEMINI_MODEL_CHAIN = [
 ] as const;
 
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
-const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Per-attempt timeout, by position in the chain.
+ *
+ * A flat 30 seconds meant a single unresponsive model cost half a minute
+ * before the chain moved on: the session trace has two calls that took 31.8s
+ * end to end for a successful leg that itself took 1.8s. The first models are
+ * given less patience because there is a fallback right behind them; the last
+ * one gets the full budget because there is nothing after it.
+ */
+const ATTEMPT_TIMEOUTS_MS = [12_000, 18_000, 30_000];
 
 export class GeminiError extends Error {
   readonly kind: 'no-key' | 'auth' | 'rate-limit' | 'bad-request' | 'network' | 'empty';
@@ -116,8 +126,9 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
     }
 
     // Own timeout, linked to any caller-supplied cancellation.
+    const timeoutMs = ATTEMPT_TIMEOUTS_MS[i] ?? 30_000;
     const timeoutCtl = new AbortController();
-    const timeoutId = setTimeout(() => timeoutCtl.abort(), REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => timeoutCtl.abort(), timeoutMs);
     const onCallerAbort = () => timeoutCtl.abort();
     signal?.addEventListener('abort', onCallerAbort);
 
@@ -179,6 +190,8 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
               'and that any HTTP-referrer restriction on it includes this site.',
         );
       }
+      event('gemini', `${model} refused the request — HTTP ${res.status}${apiMessage ? `: ${apiMessage}` : ''}`);
+
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get('Retry-After')) || undefined;
         logError('gemini', `${model} rate-limited (429)${retryAfter ? `, retry after ${retryAfter}s` : ''} — trying the next model`);
@@ -192,11 +205,15 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
       }
       // 5xx and anything else: try the next model.
       lastError = new GeminiError('network', apiMessage || `Gemini returned HTTP ${res.status}.`);
+      if (i < GEMINI_MODEL_CHAIN.length - 1) {
+        event('gemini', `falling through to ${GEMINI_MODEL_CHAIN[i + 1]}`);
+      }
       continue;
     } catch (err: any) {
       if (err instanceof GeminiError) {
         // auth / bad-request / empty are terminal.
         if (err.kind === 'auth' || err.kind === 'bad-request') throw err;
+        event('gemini', `${model} failed (${err.kind}) — ${err.message}`);
         lastError = err;
         continue;
       }
@@ -204,10 +221,18 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
         throw new GeminiError('network', 'Request cancelled.');
       }
       if (err?.name === 'AbortError') {
-        lastError = new GeminiError('network', `${model} timed out after 30 seconds.`);
+        // Previously invisible: nothing recorded WHY attempt 1 was abandoned,
+        // so a trace showed "attempt 1/3" followed by "attempt 2/3" with a
+        // 30-second hole between them and no explanation.
+        event('gemini', `${model} TIMED OUT after ${timeoutMs / 1000}s — trying the next model`);
+        lastError = new GeminiError(
+          'network',
+          `${model} timed out after ${timeoutMs / 1000} seconds.`,
+        );
         continue;
       }
       // A bare TypeError here is the classic CORS / offline signature.
+      event('gemini', `${model} could not be reached — ${err?.message ?? err}`);
       lastError = new GeminiError(
         'network',
         'Could not reach Gemini. Check your connection, or switch to a local engine.',
@@ -219,6 +244,7 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
     }
   }
 
+  event('gemini', `ALL ${GEMINI_MODEL_CHAIN.length} models failed — ${lastError?.message ?? 'no reason recorded'}`);
   throw lastError ?? new GeminiError('network', 'Every Gemini model in the chain failed.');
 }
 

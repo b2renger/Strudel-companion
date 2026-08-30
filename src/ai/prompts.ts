@@ -30,6 +30,22 @@
  */
 
 import { buildVocabularyPromptSection, DRUM_VOICES, SYNTH_VOICES } from '../audio/vocabulary';
+import { stripComments } from './sanitizeCode';
+
+/**
+ * The user's current pattern, as the model should see it.
+ *
+ * Comments are removed before the pattern is quoted into a prompt. The starter
+ * presets and the procedural composer both write "// TWEAK TIP:" comments —
+ * good for a human reading the editor, actively harmful here, because quoting
+ * them shows the model the exact same-line comment form that the system prompt
+ * two paragraphs earlier tells it never to use. A contradictory demonstration
+ * beats a stated rule every time with a small model, and same-line comments
+ * were behind every hard parse failure in the session trace.
+ */
+function forModel(code: string): string {
+  return stripComments(code || '').code.replace(/[ \t]+$/gm, '').trim();
+}
 
 /**
  * Skill-level calibration. Ported from the Express server's prompt, which was
@@ -125,7 +141,7 @@ ${CODE_BLOCK_CONTRACT}`;
 export function buildTweakPrompt(currentCode: string, instruction: string): string {
   return `CURRENT PATTERN:
 \`\`\`strudel
-${currentCode}
+${forModel(currentCode)}
 \`\`\`
 
 INSTRUCTION: "${instruction}"
@@ -148,7 +164,7 @@ CHANGED: another specific edit`;
 export function buildExplainPrompt(code: string): string {
   return `ANALYSE THIS PATTERN:
 \`\`\`strudel
-${code}
+${forModel(code)}
 \`\`\`
 
 Reply in EXACTLY this format and nothing else:
@@ -178,7 +194,7 @@ export function buildVariationPrompt(
 ): string {
   return `CURRENT PATTERN:
 \`\`\`strudel
-${currentCode}
+${forModel(currentCode)}
 \`\`\`
 
 TASK: create ONE performance variation of this pattern.
@@ -207,7 +223,7 @@ export const VARIATION_RECIPES = [
 export function buildFixPrompt(code: string, errorMessage: string): string {
   return `THIS PATTERN FAILS TO PARSE:
 \`\`\`strudel
-${code}
+${forModel(code)}
 \`\`\`
 
 ERROR: "${errorMessage}"
@@ -301,7 +317,7 @@ Write nothing else — no greeting, no explanation outside those lines.`;
 export function buildCompactTweakPrompt(currentCode: string, instruction: string): string {
   return `Here is an existing pattern:
 \`\`\`strudel
-${currentCode}
+${forModel(currentCode)}
 \`\`\`
 
 Change it so that: "${instruction}"
@@ -324,7 +340,7 @@ export function buildCompactVariationPrompt(
 ): string {
   return `Here is an existing pattern:
 \`\`\`strudel
-${currentCode}
+${forModel(currentCode)}
 \`\`\`
 
 Rewrite it as a "${variationType}" variation — ${description}.

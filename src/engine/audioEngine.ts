@@ -17,6 +17,16 @@ export interface EvalEvent {
   success: boolean;
   code?: string;
   error?: string;
+  /**
+   * Tokens in the accepted pattern that this engine cannot turn into sound.
+   * Empty on a clean evaluation.
+   *
+   * These used to be invisible. `s("rhodes")` is not a drum name, so it went
+   * down the melodic path, failed `noteToFrequency`'s regex and was dropped —
+   * while `evaluate()` still reported "EVALUATED OK — 3 layer(s)". The layer
+   * was counted, logged and silent.
+   */
+  silentTokens?: string[];
 }
 
 export type NoteCallback = (note: TriggeredNote) => void;
@@ -280,8 +290,21 @@ class StrudelAudioEngine {
       }
 
       this.parsedLayers = this.parseStrudelCode(code);
-      devent('audio', `EVALUATED OK — ${this.parsedLayers.length} layer(s) at ${this.bpm} BPM`,
-        this.parsedLayers.map((l) => `${l.type}:${l.soundType}:${l.pattern.slice(0, 40)}`));
+      const silentTokens = this.auditPlayability(this.parsedLayers);
+      devent(
+        'audio',
+        `EVALUATED OK — ${this.parsedLayers.length} layer(s) at ${this.bpm} BPM` +
+          (silentTokens.length
+            ? ` — ${silentTokens.length} token(s) WILL BE SILENT: ${silentTokens.join(', ')}`
+            : ''),
+        this.parsedLayers.map((l) => `${l.type}:${l.soundType}:${l.pattern.slice(0, 40)}`),
+      );
+      if (silentTokens.length) {
+        dwarn(
+          'audio',
+          `these names are not playable and will make no sound: ${silentTokens.join(', ')}`,
+        );
+      }
       this.emitEval({
         timestamp: Date.now(),
         cycle: this.currentCycle,
@@ -289,6 +312,7 @@ class StrudelAudioEngine {
         bpm: this.bpm,
         success: true,
         code,
+        silentTokens,
       });
       return { success: true };
     } catch (err: any) {
@@ -370,7 +394,12 @@ class StrudelAudioEngine {
    * restored so the next play() is audible.
    */
   public hush() {
-    devent('audio', 'STOPPED (hush)');
+    // Only announce a hush that actually stopped something. Several UI paths
+    // call this defensively and a no-op should not appear in the trace as a
+    // second stop.
+    if (this.isRunning || this.pendingTimeouts.size > 0) {
+      devent('audio', 'STOPPED (hush)');
+    }
     this.stop();
     this.voiceActivity = {};
 
@@ -589,6 +618,37 @@ class StrudelAudioEngine {
   }
 
   // Resolve mini-notation into time-stamped events for a given cycle
+  /**
+   * Lists tokens in the parsed layers that cannot produce audio.
+   *
+   * Runs once per evaluation, not per scheduled event — the check is the same
+   * one `triggerSound` makes, but doing it here means a pattern reports its
+   * own silence at the moment it is accepted rather than never.
+   */
+  private auditPlayability(layers: ParsedLayer[]): string[] {
+    const silent = new Set<string>();
+
+    for (const layer of layers) {
+      for (const stream of this.splitTopLevelCommas(layer.pattern)) {
+        let events: ResolvedEvent[];
+        try {
+          events = this.expandTokensToEvents(this.tokenizeMiniNotation(stream.trim(), 0), 0, 1);
+        } catch {
+          // A malformed stream is the validator's problem, not this audit's.
+          continue;
+        }
+        for (const ev of events) {
+          const item = ev.item.trim().toLowerCase();
+          if (!item || item === '~' || item === '_') continue;
+          const playable = isDrumName(item) || this.noteToFrequency(item) !== null;
+          if (!playable) silent.add(ev.item.trim());
+        }
+      }
+    }
+
+    return [...silent];
+  }
+
   private resolveLayerEvents(layer: ParsedLayer, cycle: number, resolution: number): ResolvedEvent[] {
     const events: ResolvedEvent[] = [];
 
@@ -671,6 +731,13 @@ class StrudelAudioEngine {
   }
 
   private generateEuclidean(sound: string, k: number, n: number): string[] {
+    // Clamped. `n` arrives from user- or model-written mini-notation, and
+    // `bd(3,100000)` would allocate 100,000 tokens on the audio path while
+    // `bd(3,0)` divides by zero a line below.
+    if (!Number.isFinite(k) || !Number.isFinite(n)) return [sound];
+    n = Math.max(1, Math.min(64, Math.trunc(n)));
+    k = Math.max(0, Math.min(n, Math.trunc(k)));
+
     const result: string[] = [];
     for (let i = 0; i < n; i++) {
       if ((i * k) % n < k) {
@@ -732,7 +799,15 @@ class StrudelAudioEngine {
       if (token.includes('*')) {
         const parts = token.split('*');
         const item = parts[0];
-        const count = parseInt(parts[1], 10) || 2;
+        // Clamped for the same reason as the Euclid arguments: this count
+        // comes straight from generated mini-notation and drives an
+        // allocation on the audio path. `bd*0` used to become `bd*2`, because
+        // 0 is falsy.
+        const parsedCount = parseInt(parts[1], 10);
+        const count = Number.isFinite(parsedCount)
+          ? Math.max(0, Math.min(64, parsedCount))
+          : 2;
+        if (count === 0) continue;
         const subDuration = slotDuration / count;
         for (let j = 0; j < count; j++) {
           if (item !== '~') {

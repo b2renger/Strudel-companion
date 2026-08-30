@@ -170,19 +170,67 @@ async function dump(): Promise<string> {
   return text;
 }
 
-/** Copies the trace to the clipboard. */
+/**
+ * Copies the trace to the clipboard.
+ *
+ * Three ways, because the first one does not work where this is actually used.
+ * `navigator.clipboard.writeText` needs transient user activation, and typing
+ * `strudel.copy()` into DevTools is not activation — the very first thing in
+ * the session trace that prompted this work was "Clipboard blocked (needs a
+ * user gesture or permission)", from a user who was trying to send us that
+ * trace.
+ */
 async function copy(): Promise<void> {
   const text = await formatTrace();
-  try {
-    await navigator.clipboard.writeText(text);
+  const ok = (how: string) =>
     console.log(
-      `%c✓ Session trace copied — ${getEntries().length} entries, ${text.length} chars. Paste it anywhere.`,
+      `%c✓ Session trace copied ${how} — ${getEntries().length} entries, ${text.length} chars. Paste it anywhere.`,
       'color:#059669;font-weight:bold',
     );
+
+  try {
+    await navigator.clipboard.writeText(text);
+    ok('');
+    return;
   } catch {
-    console.warn('Clipboard blocked (needs a user gesture or permission). Use strudel.dump() and copy manually.');
-    console.log(text);
+    /* no transient activation — fall through */
   }
+
+  // The old synchronous path. Needs the document focused but not a gesture,
+  // so it succeeds whenever the page itself has focus.
+  try {
+    window.focus();
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const copied = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (copied) {
+      ok('(via the page)');
+      return;
+    }
+  } catch {
+    /* fall through to the armed copy handler */
+  }
+
+  // Last resort: arm the next ⌘C / Ctrl+C anywhere on the page.
+  const onCopy = (e: ClipboardEvent) => {
+    e.clipboardData?.setData('text/plain', text);
+    e.preventDefault();
+    document.removeEventListener('copy', onCopy, true);
+    ok('(via your keyboard)');
+  };
+  document.addEventListener('copy', onCopy, true);
+  console.log(
+    '%cThe clipboard needs a keypress from you.\n' +
+      'Click anywhere on the page, then press ⌘C (Ctrl+C on Windows) — the trace will be copied.\n' +
+      'Or run strudel.save() to download it as a file, or strudel.dump() to print it here.',
+    'color:#d97706;font-weight:bold',
+  );
 }
 
 /** Saves the trace as a .txt file. */
