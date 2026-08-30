@@ -267,6 +267,50 @@ squelchy resonant sawtooth bassline under a fast low-pass envelope". Titles,
 tags and descriptions keep the genre vocabulary, because those are read by a
 human. A test enforces the boundary; if you add a suggestion, it will tell you.
 
+### Nothing from a pattern is trusted as a number
+
+Every value parsed out of a pattern — gain, pan, cutoff, decay, room, delay,
+`.fast`, `.slow`, `.cpm`, `.cps` — is clamped before it can reach Web Audio,
+with a fallback for anything non-finite.
+
+Web Audio does not tolerate what a text editor will happily produce. A
+non-finite value in `setValueAtTime` throws, `createBuffer` with a zero length
+throws, and both land inside the scheduler. `.slow(0)` is `1/0`, which made the
+repeat loop unbounded and froze the tab outright; `.decay(0)` gave the hi-hat a
+zero-length buffer; `.cpm(0)` wrote straight past `setBpm`'s clamp and made
+every scheduled time non-finite. Strudel's own transpiler accepts all three, so
+validation is not the place to catch them.
+
+Two backstops sit behind the clamps, because the next unguarded number should
+be a visible error rather than a dead engine:
+
+- `scheduleLoop` is wrapped. A throw stops playback cleanly and emits a failed
+  evaluation event instead of leaving `isRunning` true with no scheduler.
+- `play()` never rejects. Every call site in `App.tsx` is a bare
+  `audioEngine.play();`, so a rejection would be an unhandled promise rejection
+  with nothing on screen. `App` subscribes to evaluation events, so a fault
+  that happens *after* evaluation still reaches the error banner.
+
+### Device gating is a block, not a warning
+
+`tier: 'mobile-low'` was computed on every probe and read by nothing. An
+iPhone — whose GPU does have `shader-f16` — was offered the 1.9 GB Gemma with
+an enabled button, and the storage gate could not help, because browser quota
+is tens of GB and says nothing about whether the phone can hold the weights.
+
+`MOBILE_MAX_MODEL_MB` is 1200, which is not arbitrary: the 1129 MB
+`Llama-3.2-1B-Instruct-q4f32_1-MLC` is the only build in the catalogue with
+`needsF16: false`, i.e. the only model a Qualcomm Android device can run at
+all. A tighter ceiling would leave every Android phone with no local option,
+which is worse than one download with a clear warning. `maxStorageBufferBinding
+Size` is checked too — a model that cannot fit a single binding fails during
+load, long after the download.
+
+The engine picker also waits for the probe before offering anything. It used to
+render an enabled button reading "about 0 MB" in the window before the async
+probe resolved, which is reachable simply by reloading with the local engine
+remembered and opening the panel.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list
@@ -278,6 +322,8 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] `npm run build` succeeds and `dist/` contains hashed assets
 - [ ] Deployed site loads at the project path (not just at `/`)
 - [ ] Reload with the network disabled still loads the app
+- [ ] The install prompt appears (needs the manifest icons)
+- [ ] `caches.keys()` shows no `model-weights` after loading a model
 
 **Engines**
 - [ ] Each engine produces a pattern, and the "Written by" badge names it
@@ -290,7 +336,9 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Killing the network mid-request shows an error, not a silent template
 - [ ] Reloading with the local engine selected still works (worker is lazy)
 - [ ] Switching models frees the previous one and loads the new one
-- [ ] Cancel actually stops a download
+- [ ] Cancel actually stops a download, and does NOT replace the pattern
+- [ ] After a worker crash, pressing "Download model" again spawns a new one
+- [ ] Backgrounding the tab mid-download does not abort it
 - [ ] With no API key, Gemini is offered as unavailable rather than failing silently
 
 **Audio**
@@ -303,6 +351,10 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Typing `s("rhodes")` by hand shows the amber "Silent:" strip
 - [ ] Typing `s("shaker(e,i)")` shows a readable error, not `Invalid array length`
 - [ ] The number of layers you hear matches the number the trace reports
+- [ ] `s("bd*4").slow(0)` does not freeze the tab
+- [ ] `s("hh*8").decay(0)` and `s("bd*4").cpm(0)` keep playing, or stop with a
+      visible error — never stop silently with the transport still on PLAY
+- [ ] Volume, LPF and reverb are all reachable at 390px
 
 **Editor**
 - [ ] Clicking the fourth `hh` in a pattern edits the fourth, not the first

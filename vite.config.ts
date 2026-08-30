@@ -50,6 +50,21 @@ export default defineConfig(() => {
           display: 'standalone',
           orientation: 'any',
           start_url: '.',
+          // Chrome will not offer to install a site without a >=192px icon,
+          // so without these the app could not go on a home screen at all —
+          // on the platform its offline support exists for. Paths are
+          // relative so they resolve against the manifest URL, which lives
+          // under the project path on GitHub Pages, not at the origin root.
+          icons: [
+            { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            {
+              src: 'icon-maskable-512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
@@ -75,17 +90,20 @@ export default defineConfig(() => {
                 cacheableResponse: { statuses: [0, 200] },
               },
             },
-            {
-              // Model weights: let web-llm's own cache own these. We only make
-              // sure a repeat request does not fail hard when offline.
-              urlPattern: /^https:\/\/(huggingface\.co|cdn-lfs.*\.huggingface\.co|raw\.githubusercontent\.com)\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'model-weights',
-                expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 90 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
+            // There is deliberately NO rule for model weights.
+            //
+            // There used to be a CacheFirst route over huggingface.co and
+            // raw.githubusercontent.com, justified as "make sure a repeat
+            // request does not fail hard when offline". It cannot do that.
+            // web-llm's own `addToCache` calls `cache.match()` first and only
+            // fetches on a miss, so it never repeats a request it has already
+            // cached — the workbox copy can never be the one that rescues an
+            // offline load. What it did instead was store every shard twice,
+            // once in web-llm's `webllm/model` scope and once in
+            // `model-weights`, because `Cache.add()` from a controlled client
+            // is an ordinary fetch the service worker can see. A 900 MB model
+            // occupied about 1.8 GB. `aiManager` deletes the orphaned cache on
+            // startup for anyone who already has one.
           ],
         },
       }),

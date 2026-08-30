@@ -677,6 +677,38 @@ export default function App() {
               Hush
             </button>
           </div>
+          {/* Master mix, phones and small tablets only.
+
+              The header carries these from `lg` up, but below that they were
+              all hidden — so on a 390px screen there was no volume control, no
+              filter and no reverb anywhere in the app. `lg:hidden` here mirrors
+              `hidden lg:flex` there, so the controls exist at every width and
+              are never duplicated. */}
+          <div className="flex lg:hidden items-center gap-3 order-last w-full">
+            {([
+              ['Vol', volume, 0, 1.2, 0.05, handleVolumeChange, 'accent-pink-600', (v: number) => `${Math.round(v * 100)}%`],
+              ['LPF', cutoff, 200, 16000, 100, handleCutoffChange, 'accent-emerald-600', (v: number) => (v > 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`)],
+              ['Verb', reverb, 0, 1, 0.05, handleReverbChange, 'accent-indigo-600', (v: number) => `${Math.round(v * 100)}%`],
+            ] as const).map(([label, value, min, max, step, onChange, accent, format]) => (
+              <div key={label} className="flex flex-col flex-1 min-w-0">
+                <div className="flex items-center justify-between text-[8px] text-gray-600 uppercase font-semibold">
+                  <span>{label}</span>
+                  <span className="text-gray-900 font-bold">{format(value)}</span>
+                </div>
+                <input
+                  type="range"
+                  aria-label={`Master ${label}`}
+                  min={min}
+                  max={max}
+                  step={step}
+                  value={value}
+                  onChange={(e) => onChange(Number(e.target.value))}
+                  className={`w-full h-1.5 bg-gray-200 rounded-full mt-1 cursor-pointer ${accent}`}
+                />
+              </div>
+            ))}
+          </div>
+
           <div className="flex items-center gap-3">
             <span className="text-[10px] text-gray-600 uppercase tracking-wider font-semibold">Tempo</span>
             <div className="flex items-center gap-2 bg-gray-100 px-3 py-1.5 rounded-lg border border-gray-200">

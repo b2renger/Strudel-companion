@@ -154,6 +154,13 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
     [caps.device],
   );
   const currentAssessment = assessed.find((a) => a.model.id === selectedModel);
+  // `assessed` is empty until the async GPU probe resolves, and
+  // `restorePreferences()` restores the local engine synchronously at module
+  // load — so reloading with it remembered and opening this panel immediately
+  // showed an enabled button reading "about 0 MB", for a model that might be
+  // blocked once the probe lands. Wait for the probe rather than guess.
+  const isProbing = !caps.device;
+  const selectedSpec = WEBGPU_MODELS.find((m) => m.id === selectedModel);
   const isBusy = progress.status === 'downloading';
 
   if (!isOpen) return null;
@@ -486,7 +493,21 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
                 </p>
               )}
 
-              {(assessed.length ? assessed : WEBGPU_MODELS.map((m) => ({ model: m, availability: { usable: true, recommended: false, warnings: [] as string[], blockedReason: undefined } }))).map(
+              {(assessed.length
+                ? assessed
+                : // Placeholder while the probe runs. Marked unusable rather
+                  // than usable, so nothing is offered before the device has
+                  // actually been checked.
+                  WEBGPU_MODELS.map((m) => ({
+                    model: m,
+                    availability: {
+                      usable: false,
+                      recommended: false,
+                      warnings: [] as string[],
+                      blockedReason: 'Checking what this device can run…',
+                    },
+                  }))
+              ).map(
                 ({ model, availability }) => {
                   const selected = selectedModel === model.id;
                   return (
@@ -531,14 +552,16 @@ export const AIEngineSelectorModal: React.FC<AIEngineSelectorModalProps> = ({
 
               <button
                 onClick={handleDownload}
-                disabled={isBusy || currentAssessment?.availability.usable === false}
+                disabled={isBusy || isProbing || currentAssessment?.availability.usable === false}
                 className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {isBusy
                   ? 'Downloading…'
-                  : `Download and load this model (about ${formatSize(
-                      currentAssessment?.model.vramMB ?? 0,
-                    )})`}
+                  : isProbing
+                    ? 'Checking what this device can run…'
+                    : `Download and load this model (about ${formatSize(
+                        currentAssessment?.model.vramMB ?? selectedSpec?.vramMB ?? 0,
+                      )})`}
               </button>
               <p className="text-[10px] text-gray-600">
                 Downloads once and is kept in this browser. It is not sent anywhere.

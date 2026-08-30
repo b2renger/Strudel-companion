@@ -135,10 +135,44 @@ class AIManager {
       });
     });
 
+    // Reclaim the orphaned `model-weights` cache.
+    //
+    // A previous build put a workbox CacheFirst route over the Hugging Face
+    // hosts, which duplicated every model shard alongside web-llm's own copy —
+    // roughly doubling the disk a local model occupied. The route is gone, but
+    // anyone who used that build still has the cache sitting there.
+    if (typeof caches !== 'undefined') {
+      caches
+        .delete('model-weights')
+        .then((deleted) => {
+          if (deleted) event('cache', 'reclaimed the orphaned model-weights cache');
+        })
+        .catch(() => {
+          /* nothing to reclaim, or storage is unavailable */
+        });
+    }
+
     if (typeof window !== 'undefined') {
       // Free GPU memory when the tab goes away. `pagehide` fires on mobile
       // Safari where `beforeunload` does not.
-      window.addEventListener('pagehide', () => this.releaseWorker());
+      // Only on a real teardown.
+      //
+      // `pagehide` fires on iOS when the user switches apps, switches tabs, or
+      // simply locks the screen — and this used to terminate the worker and
+      // reject the in-flight request, so looking away for thirty seconds
+      // during an 879 MB download ended it with "The local model was
+      // unloaded." and no way to resume. `event.persisted` is false only when
+      // the page is genuinely being discarded rather than frozen into the
+      // back/forward cache, and even then an in-flight load is left alone: the
+      // browser is about to reclaim everything anyway.
+      window.addEventListener('pagehide', (e) => {
+        if (e.persisted) return;
+        if (this.pending.size > 0) {
+          log('worker', 'pagehide during in-flight work — leaving the worker alone');
+          return;
+        }
+        this.releaseWorker();
+      });
     }
   }
 

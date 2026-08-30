@@ -130,6 +130,21 @@ export interface ModelAvailability {
   blockedReason?: string;
 }
 
+/**
+ * Largest local model offered on a phone or tablet.
+ *
+ * 1200 is not arbitrary. `Llama-3.2-1B-Instruct-q4f32_1-MLC` is 1129 MB and is
+ * the ONLY build in the catalogue with `needsF16: false` — i.e. the one model a
+ * Qualcomm Android device can run at all, since those GPUs cannot provide
+ * `shader-f16`. A tighter ceiling would block it and leave every Android phone
+ * with no local option whatsoever, which is worse than offering one download
+ * with a clear warning attached.
+ *
+ * Above this line sit the 1583/1774/1895 MB builds, which a phone reliably
+ * fails to load after downloading them in full.
+ */
+export const MOBILE_MAX_MODEL_MB = 1200;
+
 /** Decide whether a given model should be offered on this device. */
 export function assessModel(model: WebGPUModelSpec, device: DeviceProfile): ModelAvailability {
   const warnings: string[] = [];
@@ -163,6 +178,49 @@ export function assessModel(model: WebGPUModelSpec, device: DeviceProfile): Mode
       blockedReason:
         `Your GPU${vendor} does not support 16-bit shaders, which this build requires. ` +
         'Qualcomm chips — so most Android phones — cannot provide it. Pick the f32 model instead.',
+    };
+  }
+
+  // The mobile ceiling.
+  //
+  // `tier: 'mobile-low'` was computed on every probe and then read by nothing
+  // — the only tiers any consumer branched on were `no-webgpu` and
+  // `no-adapter`, and `isMobile` merely appended a warning string. So an
+  // iPhone, whose GPU does have shader-f16, was offered a 1.9 GB model with an
+  // enabled button reading "Download and load this model (about 1.9 GB)". The
+  // storage gate did not stop it either: browser quota is usually tens of GB,
+  // which says nothing about whether the phone can hold the weights in memory.
+  //
+  // This is the "performance warnings depending on the device" the app is
+  // supposed to have, expressed as a block rather than a warning, because a
+  // download a phone cannot finish is not something to warn about and proceed.
+  if (device.tier === 'mobile-low' && model.vramMB > MOBILE_MAX_MODEL_MB) {
+    return {
+      usable: false,
+      recommended: false,
+      warnings,
+      blockedReason:
+        `At ${formatSize(model.vramMB)} this is too large for a phone or tablet — the download ` +
+        `usually cannot finish, and the browser reclaims the memory before it loads. ` +
+        `Models up to ${formatSize(MOBILE_MAX_MODEL_MB)} are offered here; Gemini with your own ` +
+        'key is the better fit on mobile.',
+    };
+  }
+
+  // WebGPU's own limits. A model whose weights cannot fit in a single storage
+  // buffer binding will fail during load, well after the download.
+  const bindingBytes = model.vramMB * 1024 * 1024 * 0.25;
+  if (
+    device.maxStorageBufferBindingSize > 0 &&
+    device.maxStorageBufferBindingSize < bindingBytes
+  ) {
+    return {
+      usable: false,
+      recommended: false,
+      warnings,
+      blockedReason:
+        `Your GPU allows at most ${formatSize(device.maxStorageBufferBindingSize / (1024 * 1024))} ` +
+        'per storage buffer, which is too small for this model. Pick a smaller one.',
     };
   }
 

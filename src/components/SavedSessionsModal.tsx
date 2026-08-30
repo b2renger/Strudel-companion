@@ -31,6 +31,7 @@ import {
   importSessionsFromJSON,
   getActiveSessionId,
   setActiveSessionId,
+  getLastStorageError,
 } from '../utils/sessionStorage';
 import { openInOfficialStrudel } from '../utils/strudelExport';
 
@@ -116,7 +117,12 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
     const updated = saveSession(newSession);
     setSessions(updated);
     setActiveId(newSession.id);
-    setSaveSuccessMsg(`Session "${newSession.name}" saved!`);
+    // Confirmed against storage, not assumed. Every write failure used to be
+    // swallowed and reported as a success.
+    const storageError = getLastStorageError();
+    setSaveSuccessMsg(
+      storageError ? storageError : `Session "${newSession.name}" saved!`,
+    );
     setTimeout(() => setSaveSuccessMsg(null), 3000);
   };
 
@@ -178,7 +184,12 @@ export const SavedSessionsModal: React.FC<SavedSessionsModalProps> = ({
         const text = event.target?.result as string;
         const imported = importSessionsFromJSON(text);
         setSessions(imported);
-        setSaveSuccessMsg(`Imported ${imported.length} sessions successfully!`);
+        const importError = getLastStorageError();
+        setSaveSuccessMsg(
+          importError
+            ? importError
+            : `Imported ${imported.length} sessions successfully!`,
+        );
         setTimeout(() => setSaveSuccessMsg(null), 3000);
       } catch (err: any) {
         alert('Failed to import JSON: ' + err.message);

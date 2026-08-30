@@ -19,6 +19,10 @@
       want JetBrains Mono specifically, self-host the woff2 next to the bundle
       rather than reintroducing a third-party request.
     -->
+    <!-- Relative, not root-absolute: the site is served from a project path
+         on GitHub Pages, so /favicon-32.png would 404. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
   </head>
   <body class="antialiased">
     <div id="root"></div>

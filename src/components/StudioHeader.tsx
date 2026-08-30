@@ -1,4 +1,5 @@
 import React from 'react';
+import { getLastStorageError } from '../utils/sessionStorage';
 import {
   Moon,
   Sun,
@@ -66,7 +67,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   onOpenAIEngine,
 }) => {
   const [isDark, setIsDark] = React.useState(false);
-  const [quickSavedFeedback, setQuickSavedFeedback] = React.useState(false);
+  const [quickSaveResult, setQuickSaveResult] = React.useState<'saved' | 'failed' | null>(null);
   const [activeEngine, setActiveEngine] = React.useState(aiManager.getActiveEngine());
   const [engineProgress, setEngineProgress] = React.useState(aiManager.getProgress());
 
@@ -108,8 +109,11 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
 
   const handleQuickSaveClick = () => {
     onQuickSave();
-    setQuickSavedFeedback(true);
-    setTimeout(() => setQuickSavedFeedback(false), 2000);
+    // "Saved!" used to appear unconditionally. In Safari with cookies blocked
+    // every write throws, so the button confirmed a save that never happened
+    // and a reload quietly showed the starter sessions again.
+    setQuickSaveResult(getLastStorageError() ? 'failed' : 'saved');
+    setTimeout(() => setQuickSaveResult(null), 2600);
   };
 
   return (
@@ -168,7 +172,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
         </div>
 
         {/* LPF Cutoff */}
-        <div className="hidden xl:flex flex-col">
+        <div className="hidden lg:flex flex-col">
           <div className="flex items-center justify-between text-[8px] text-gray-600 uppercase font-semibold">
             <span>LPF Cutoff</span>
             <span className="text-emerald-600 font-bold">
@@ -204,6 +208,30 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
             value={volume}
             onChange={(e) => onVolumeChange(Number(e.target.value))}
             className="w-14 h-1.5 bg-gray-200 rounded-full mt-1 cursor-pointer accent-pink-600"
+          />
+        </div>
+
+        {/* Master Reverb.
+
+            `reverb` and `onReverbChange` were threaded all the way from
+            App.tsx through to this component's props and then referenced
+            nowhere in the JSX, so the send sat pinned at its default and
+            `audioEngine.setReverb()` was unreachable code. */}
+        <div className="hidden lg:flex flex-col">
+          <div className="flex items-center justify-between text-[8px] text-gray-600 uppercase font-semibold">
+            <span>Verb</span>
+            <span className="text-indigo-600 font-bold">{Math.round(reverb * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            aria-label="Master reverb send"
+            aria-valuetext={`${Math.round(reverb * 100)} percent`}
+            min={0}
+            max={1}
+            step={0.05}
+            value={reverb}
+            onChange={(e) => onReverbChange(Number(e.target.value))}
+            className="w-14 h-1.5 bg-gray-200 rounded-full mt-1 cursor-pointer accent-indigo-600"
           />
         </div>
 
@@ -263,15 +291,28 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           <button
             onClick={handleQuickSaveClick}
             className={`px-2 py-1.5 border rounded-md text-xs flex items-center gap-1 transition-all font-mono shadow-sm uppercase ${
-              quickSavedFeedback
+              quickSaveResult === 'saved'
                 ? 'bg-emerald-500 text-white border-emerald-500 font-bold'
-                : 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-gray-800'
+                : quickSaveResult === 'failed'
+                  ? 'bg-red-600 text-white border-red-600 font-bold'
+                  : 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-gray-800'
             }`}
-            title="Quick save current workspace state" aria-label="Quick save current workspace state"
+            title={
+              quickSaveResult === 'failed'
+                ? getLastStorageError() ?? 'Could not save'
+                : 'Quick save current workspace state'
+            }
+            aria-label="Quick save current workspace state"
           >
-            <Save className="w-3.5 h-3.5 text-emerald-600" />
+            <Save
+              className={`w-3.5 h-3.5 ${quickSaveResult ? 'text-white' : 'text-emerald-600'}`}
+            />
             <span className="hidden sm:inline font-semibold">
-              {quickSavedFeedback ? 'Saved!' : 'Save'}
+              {quickSaveResult === 'saved'
+                ? 'Saved!'
+                : quickSaveResult === 'failed'
+                  ? "Can't save"
+                  : 'Save'}
             </span>
           </button>
 

@@ -1,5 +1,6 @@
 import { SavedSession, AIVariation } from '../types';
 import { STARTER_PRESETS } from '../data/presets';
+import { warn, error as logError } from '../ai/diagnostics';
 
 const STORAGE_KEY = 'strudel_saved_sessions_v1';
 /** Marks that the starter sessions have been installed at least once. */
@@ -124,6 +125,7 @@ export function getSavedSessions(): SavedSession[] {
 export function saveAllSessions(sessions: SavedSession[]): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    lastStorageError = null;
     return true;
   } catch (err) {
     // Almost always QuotaExceededError. Retry once with the bulkiest field —
@@ -134,16 +136,45 @@ export function saveAllSessions(sessions: SavedSession[]): boolean {
         i < 5 ? s : { ...s, variations: [] },
       );
       localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      lastStorageError =
+        'Storage was full, so older variations were dropped to make room. Your patterns are safe.';
+      warn('cache', lastStorageError);
       return true;
     } catch {
-      console.error('Failed to write sessions to localStorage:', err);
+      lastStorageError = describeStorageError(err);
+      logError('cache', `could not write sessions — ${lastStorageError}`, err);
       return false;
     }
   }
 }
 
 /**
+ * Why the last write failed, or null.
+ *
+ * `saveAllSessions` has always returned a boolean and no caller has ever read
+ * it, so a failed write was reported to the user as "Saved!" — most reliably in
+ * Safari with cookies blocked, where every write throws and a reload silently
+ * shows the starter sessions again.
+ */
+let lastStorageError: string | null = null;
+
+export function getLastStorageError(): string | null {
+  return lastStorageError;
+}
+
+function describeStorageError(err: unknown): string {
+  const name = (err as any)?.name ?? '';
+  if (/quota/i.test(name) || /quota/i.test(String((err as any)?.message ?? ''))) {
+    return 'Browser storage is full, so this could not be saved. Delete a few saved sessions and try again.';
+  }
+  return 'This browser is blocking local storage, so nothing can be saved. Check your privacy settings for this site.';
+}
+
+/**
  * Save or update a single session.
+ *
+ * Returns the list AND whether it reached storage, so a caller can stop
+ * claiming success it did not have.
  */
 export function saveSession(session: SavedSession): SavedSession[] {
   const sessions = getSavedSessions();
