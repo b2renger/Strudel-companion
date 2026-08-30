@@ -23,6 +23,7 @@ import {
   AIParseError,
 } from '../src/ai/outputParser.ts';
 import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
+import { VARIATION_RECIPES, buildVariationPrompt, buildCompactVariationPrompt } from '../src/ai/prompts.ts';
 import {
   buildCompactGeneratePrompt,
   buildCompactTweakPrompt,
@@ -52,7 +53,11 @@ import {
 } from '../src/ai/sanitizeCode.ts';
 import { completionIsDone } from '../src/ai/streamStop.ts';
 import { clamp } from '../src/engine/audioEngine.ts';
-import { buildHeuristicVariations, splitPattern } from '../src/ai/variationEngine.ts';
+import {
+  buildHeuristicVariations,
+  splitPattern,
+  countChangedLayers,
+} from '../src/ai/variationEngine.ts';
 import { suggestHeuristicVariations } from '../src/ai/ruleBasedGenerator.ts';
 
 let passed = 0;
@@ -1164,6 +1169,77 @@ test('the manager-facing entry point still returns variations', () => {
     assert.ok(v.title && v.description && v.code);
     assert.notEqual(v.code.trim(), TECHNO.trim());
   }
+});
+
+test('countChangedLayers measures what it says', () => {
+  const two = 'stack(\n  s("bd*4"),\n  s("hh*8")\n)';
+  assert.equal(countChangedLayers(two, two), 0);
+  assert.equal(countChangedLayers(two, 'stack(\n  s("bd*4"),\n  s("hh*16")\n)'), 1);
+  assert.equal(
+    countChangedLayers(two, 'stack(\n  s("bd(3,8)"),\n  s("hh*16")\n)'),
+    2,
+    'both layers differ',
+  );
+  // A removed layer shifts the tail, which a positional diff would report as
+  // everything having changed.
+  assert.equal(countChangedLayers(two, 'stack(\n  s("bd*4")\n)'), 1, 'one layer removed');
+  assert.equal(countChangedLayers(two, 'not a pattern at all'), Infinity);
+});
+
+test('the default mood only ever changes ONE layer', () => {
+  // A DJ switches into a variation over the pattern already playing. If it has
+  // rewritten every layer it is a different track, not a variation, and it is
+  // useless mid-bar. The default mood is the conservative one.
+  const layers = splitPattern(TECHNO)!.layers.length;
+  assert.ok(layers >= 4, 'test pattern is too small to be meaningful');
+
+  let checked = 0;
+  for (let seed = 0; seed < 40; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, 'Dynamic & Surprising', 4, seed)) {
+      const touched = countChangedLayers(TECHNO, v.code);
+      assert.equal(
+        touched,
+        1,
+        `seed ${seed}: "${v.title}" changed ${touched} of ${layers} layers`,
+      );
+      checked++;
+    }
+  }
+  assert.ok(checked > 100, `only ${checked} variations checked`);
+});
+
+test('a mood that names a big move still gets one', () => {
+  // Conservative by default, but "Heavy Drops" is an explicit request.
+  let sawBigMove = false;
+  let batches = 0;
+  for (let seed = 0; seed < 25; seed++) {
+    const batch = buildHeuristicVariations(TECHNO, 'Heavy Drops & Peak Energy', 4, seed);
+    if (batch.length === 0) continue;
+    batches++;
+    if (batch.some((v) => countChangedLayers(TECHNO, v.code) > 1)) sawBigMove = true;
+    // ...and never more than one per batch.
+    const big = batch.filter((v) => countChangedLayers(TECHNO, v.code) > 1).length;
+    assert.ok(big <= 1, `seed ${seed} returned ${big} structural moves in one batch`);
+  }
+  assert.ok(batches > 0);
+  assert.ok(sawBigMove, 'a mood that names a drop never produced one');
+});
+
+test('the AI variation prompts ask for one change, not a rewrite', () => {
+  const pattern = 'stack(\n  s("bd*4"),\n  s("hh*8")\n)';
+  for (const recipe of VARIATION_RECIPES) {
+    const full = buildVariationPrompt(pattern, 'energetic', recipe.type, recipe.description);
+    const compact = buildCompactVariationPrompt(pattern, recipe.type, recipe.description);
+    assert.ok(/ONE/.test(full), `${recipe.type}: the full prompt does not insist on one change`);
+    assert.ok(
+      /identical/i.test(full),
+      `${recipe.type}: the full prompt does not require the rest to be identical`,
+    );
+    assert.ok(/ONE change/.test(compact), `${recipe.type}: the compact prompt is not conservative`);
+  }
+  // The recipes themselves must not describe wholesale rewrites.
+  const described = VARIATION_RECIPES.map((r) => r.description).join(' ');
+  assert.ok(!/maximum drive|stripped back, atmospheric/.test(described));
 });
 
 // ---------------------------------------------------------------------------

@@ -302,6 +302,10 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
               const varKey = v.id || `var-${i}`;
               const isSaved = !!savedVarIds[varKey];
               const isActive = currentCode.trim() === v.code.trim();
+              // The auto-snapshot of the beat the batch was made from. Styled
+              // apart from the variations so it reads as "back to where I was"
+              // rather than as another thing to try.
+              const isOriginal = v.type === 'original';
 
               return (
                 <div
@@ -309,7 +313,9 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                   className={`bg-[var(--app-card-1)] p-2.5 rounded-lg border flex flex-col justify-between gap-2 shadow-sm transition-all relative group ${
                     isActive
                       ? 'border-emerald-500 ring-1 ring-emerald-500/30 bg-emerald-50/20'
-                      : 'border-gray-200 hover:border-gray-300'
+                      : isOriginal
+                        ? 'border-indigo-300 bg-indigo-50/30 hover:border-indigo-400'
+                        : 'border-gray-200 hover:border-gray-300'
                   }`}
                 >
                   <div>
@@ -324,8 +330,14 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                             Active
                           </span>
                         )}
-                        <span className="text-[8px] uppercase px-1.5 py-0.5 rounded bg-gray-100 text-emerald-600 border border-emerald-500/20 font-bold shrink-0">
-                          {v.type}
+                        <span
+                          className={`text-[8px] uppercase px-1.5 py-0.5 rounded font-bold shrink-0 border ${
+                            isOriginal
+                              ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
+                              : 'bg-gray-100 text-emerald-600 border-emerald-500/20'
+                          }`}
+                        >
+                          {isOriginal ? 'snapshot' : v.type}
                         </span>
                       </div>
                     </div>
@@ -369,7 +381,7 @@ export const AILiveCopilot: React.FC<AILiveCopilotProps> = ({
                       <ExternalLink className="w-3 h-3" />
                     </button>
 
-                    {onDeleteVariation && (
+                    {onDeleteVariation && !isOriginal && (
                       <button
                         onClick={() => onDeleteVariation(v.id || varKey)}
                         className="p-1.5 rounded-md bg-gray-100 hover:bg-red-50 text-gray-400 hover:text-red-500 border border-gray-200 transition-colors opacity-70 group-hover:opacity-100"

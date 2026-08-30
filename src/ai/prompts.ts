@@ -246,8 +246,15 @@ ${forModel(currentCode)}
 
 TASK: create ONE performance variation of this pattern.
 - Variation type: ${variationType}
-- It should feel like: ${description}
+- The change to make: ${description}
 - Overall mood: ${mood || 'energetic'}
+
+THIS IS THE MOST IMPORTANT RULE. Change ONE thing. Every other layer must come
+back character for character identical to the pattern above — same sounds, same
+numbers, same order. A DJ is going to switch to this mid-bar over the pattern
+that is already playing, so it has to still be recognisably the same track.
+Rewriting the whole thing is a new pattern, not a variation, and is useless
+here.
 
 Reply in EXACTLY this format and nothing else:
 
@@ -260,11 +267,31 @@ TITLE: a short performance name
 SUMMARY: one sentence on how it differs from the original`;
 }
 
-/** The variations the copilot offers, used to drive sequential calls. */
+/**
+ * The variations the copilot offers, used to drive sequential calls.
+ *
+ * Deliberately small moves. These used to be "peak energy — full kick, open
+ * filter, maximum drive", "drums stripped back, atmospheric pads", and a
+ * wholesale Euclidean rewrite — three different patterns rather than three
+ * variations of the one playing. In a live set the useful move is one element
+ * changing while everything else holds, so that is what they ask for now.
+ */
 export const VARIATION_RECIPES = [
-  { type: 'drop', title: 'The Drop', description: 'peak energy — full kick, open filter, maximum drive' },
-  { type: 'breakdown', title: 'The Breakdown', description: 'drums stripped back, atmospheric pads, long reverb' },
-  { type: 'polyrhythm', title: 'Euclidean Shift', description: 'syncopated Euclidean cross-rhythms against the pulse' },
+  {
+    type: 'lift',
+    title: 'Lift',
+    description: 'ONE element opens up — a closed hat opens, or one filter cracks wider',
+  },
+  {
+    type: 'strip',
+    title: 'Strip',
+    description: 'ONE layer drops out entirely, everything that remains untouched',
+  },
+  {
+    type: 'accent',
+    title: 'Accent',
+    description: 'ONE hit becomes a ghost note, a double, or moves by a step',
+  },
 ] as const;
 
 export function buildFixPrompt(code: string, errorMessage: string): string {
@@ -390,10 +417,13 @@ export function buildCompactVariationPrompt(
 ${forModel(currentCode)}
 \`\`\`
 
-Rewrite it as a "${variationType}" variation — ${description}.
+Make ONE change to it: ${description}.
 
-Reply with the COMPLETE new pattern in a \`\`\`strudel block, then one TITLE
-line. Write nothing else.`;
+Copy every other layer back exactly as it is — same sounds, same numbers, same
+order. Only one thing may differ.
+
+Reply with the COMPLETE pattern in a \`\`\`strudel block, then one TITLE line.
+Write nothing else.`;
 }
 
 /**

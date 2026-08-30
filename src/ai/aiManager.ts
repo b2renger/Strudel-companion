@@ -55,6 +55,7 @@ import {
   parseVariationResult,
 } from './outputParser';
 import { log, event, error as logError, timer, group, preview } from './diagnostics';
+import { countChangedLayers } from './variationEngine';
 import { ingest } from './sessionLog';
 import {
   generateHeuristicTrack,
@@ -791,6 +792,17 @@ class AIManager {
                 variation = parseVariationResult(raw, recipe);
               }
             }
+            // A variation identical to the pattern it varies is a no-op the
+            // user would click and hear nothing from, and one that rewrote
+            // every layer is a different track rather than something to switch
+            // into mid-bar. Both are reported; the no-op is dropped.
+            const touched = countChangedLayers(currentCode, variation.code);
+            if (touched === 0) {
+              event('ai', `variation "${recipe.type}" came back unchanged — dropping it`);
+              continue;
+            }
+            log('ai', `variation "${recipe.type}" changed ${touched} layer(s)`);
+
             variations.push(variation);
             this.emitProgress({
               status: 'ready',

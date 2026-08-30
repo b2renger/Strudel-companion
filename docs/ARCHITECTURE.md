@@ -391,11 +391,41 @@ byte-identical to the pattern already playing**, 23 that carried `//` comments,
 and 9 with a quoted `.pan("…")` argument this engine ignores by design. Clicking
 one did nothing at all, roughly one time in six.
 
-Every candidate now has to survive three checks before it is offered: it must
-differ from the source, differ from the others in its batch, and still parse.
-A transform that does not apply to this pattern is dropped, not dressed up.
-The tests assert all of that, plus that at least 60% of what comes back touches
-a single layer.
+Every candidate now has to survive four checks before it is offered: it must
+differ from the source, differ from the others in its batch, still parse, and
+come in under a change budget. A transform that does not apply to this pattern
+is dropped, not dressed up.
+
+**The budget is the important one.** A DJ switches into a variation over the
+pattern already playing, so it has to still be recognisably the same track — a
+variation that has rewritten every layer is a different track and is useless
+mid-bar. `countChangedLayers()` measures it, and a micro transform that comes
+back having touched more than one layer is rejected rather than trusted, even
+though its own title claims otherwise.
+
+Structural moves are offered ONLY when the mood names one. Under the default
+"Dynamic & Surprising" every macro used to be eligible, so a click could return
+three patterns that had each rewritten everything. Now the default is 100%
+single-layer edits, and picking "Heavy Drops" or "Ambient Reverb" — an explicit
+request for a big move — yields exactly one of them alongside three small ones.
+
+The same discipline applies to the AI engines, which have no budget we can
+enforce inside the model: `VARIATION_RECIPES` describes small moves rather than
+"peak energy — full kick, open filter, maximum drive", the prompt says in as
+many words that every other layer must come back character for character
+identical, and `aiManager` measures the result and drops a variation that came
+back unchanged.
+
+### The original beat is snapshotted automatically
+
+Requesting variations pins a card for the pattern they were made from at the
+front of the list.
+
+Without it there is no way back. The batch replaces the previous one, applying
+a variation overwrites the editor, and "Undo, restore my pattern" only covers a
+generate or a tweak — so trying three variations in a row left the beat you
+started from gone for good. It is an ordinary card, so returning is one click,
+and because it is IN the list the batch survives clicking it.
 
 ## Verification checklist
 
@@ -428,6 +458,9 @@ or a real network. Check these by hand after touching the relevant area.
 - [ ] Every variation offered actually sounds different from what is playing
 - [ ] Editing the pattern and pressing Run empties the variation list
 - [ ] Clicking a variation keeps its siblings, so they can be A/B-ed
+- [ ] Under the default mood every variation changes exactly one layer
+- [ ] "Heavy Drops" returns one big move and three small ones
+- [ ] The "Original" snapshot card restores the beat the batch was made from
 - [ ] Asking for "something at 90 bpm" in free text produces a 90 BPM pattern
 - [ ] A local-model tweak finishes in single-digit seconds, not ~37
 - [ ] With Gemini's first chain model down, the fallback happens within ~12s

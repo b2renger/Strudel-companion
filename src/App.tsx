@@ -562,6 +562,24 @@ export default function App() {
           createdAt: Date.now(),
         }));
 
+        // An automatic snapshot of the beat the variations were made from,
+        // pinned to the front of the list.
+        //
+        // Without it there is no way back. The variations replace the previous
+        // batch, applying one overwrites the editor, and "Undo, restore my
+        // pattern" only covers a generate or a tweak — so trying three
+        // variations in a row left the original beat gone. It is a card like
+        // any other, so getting back is one click, and because it IS in the
+        // list the batch survives clicking it.
+        const original: AIVariation = {
+          id: `original-${Date.now()}`,
+          title: 'Original',
+          type: 'original',
+          description: 'The beat these were made from. Click to come straight back to it.',
+          code: sourceCode,
+          createdAt: Date.now(),
+        };
+
         // REPLACE, not accumulate.
         //
         // These are alternatives to the pattern that is playing right now, so
@@ -569,7 +587,11 @@ export default function App() {
         // no business sitting in the same list. Accumulating also meant the
         // panel silently mixed variations of three different patterns, which
         // is what made it untrustworthy in the first place.
-        setVariations(incoming.slice(0, MAX_VARIATIONS));
+        const batch = [
+          original,
+          ...incoming.filter((v) => v.code.trim() !== sourceCode.trim()),
+        ].slice(0, MAX_VARIATIONS);
+        setVariations(batch);
         setVariationsSource(sourceCode);
 
         // Auto-save into the active session, but ONLY when that session is
@@ -584,7 +606,7 @@ export default function App() {
         if (activeId) {
           const target = getSavedSessions().find((s) => s.id === activeId);
           if (target && target.code.trim() === sourceCode.trim()) {
-            target.variations = incoming.slice(0, MAX_VARIATIONS);
+            target.variations = batch;
             saveSession(target);
           }
         }
@@ -608,6 +630,9 @@ export default function App() {
 
   // Apply a variation immediately
   const handleApplyVariation = (variationCode: string) => {
+    if (variationsSource && variationCode.trim() === variationsSource.trim()) {
+      logEvent('user', 'RESTORE the original beat from the snapshot');
+    }
     // Unlogged, this produced `EVALUATED OK` lines in the session trace with
     // no user action to explain them — thirteen of them in one session, which
     // made the trace look like the app was evaluating patterns by itself.
