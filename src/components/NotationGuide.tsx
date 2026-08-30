@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { event as logEvent } from '../ai/diagnostics';
 import { X, Plus, BookOpen, Volume2 } from 'lucide-react';
 import { NOTATION_DICTIONARY } from '../data/presets';
 import { NotationSymbol } from '../types';
@@ -17,6 +18,17 @@ export const NotationGuide: React.FC<NotationGuideProps> = ({
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [playingExample, setPlayingExample] = useState<string | null>(null);
+  const previewTimer = useRef<number | null>(null);
+
+  // Cleared when the modal closes, so a preview cannot outlive it.
+  useEffect(() => {
+    if (isOpen) return;
+    if (previewTimer.current !== null) {
+      window.clearTimeout(previewTimer.current);
+      previewTimer.current = null;
+      audioEngine.hush();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -28,13 +40,23 @@ export const NotationGuide: React.FC<NotationGuideProps> = ({
       : NOTATION_DICTIONARY.filter((s) => s.category === selectedCategory);
 
   const handlePreview = (item: NotationSymbol) => {
+    // Logged, because this is a user action that evaluates a pattern. Without
+    // it, browsing the guide produced `EVALUATED OK` lines in the session
+    // trace with nothing to explain them.
+    logEvent('user', `PREVIEW notation "${item.symbol}" — ${item.title}`);
     setPlayingExample(item.symbol);
     audioEngine.evaluate(item.example);
     audioEngine.play();
 
-    // Stop after 3 seconds so it's a brief taste
-    setTimeout(() => {
+    // Stop after 3 seconds so it stays a brief taste. The timer used to clear
+    // only the highlight, so the example kept looping under whatever the user
+    // did next — and the App's 150ms poller then flipped the transport to
+    // "playing" on its own.
+    if (previewTimer.current !== null) window.clearTimeout(previewTimer.current);
+    previewTimer.current = window.setTimeout(() => {
+      previewTimer.current = null;
       setPlayingExample(null);
+      audioEngine.hush();
     }, 3200);
   };
 

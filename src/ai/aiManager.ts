@@ -722,7 +722,16 @@ class AIManager {
               text: `Created ${variations.length} of ${VARIATION_RECIPES.length} variations…`,
               progress: variations.length / VARIATION_RECIPES.length,
             });
-          } catch (err) {
+          } catch (err: any) {
+            // Recorded, not swallowed. This was the one engine path in the
+            // file that failed silently: two of three variations could fail
+            // and the user would get a single result with nothing anywhere
+            // saying why the other two were missing.
+            logError(
+              'ai',
+              `variation "${recipe.type}" failed — ${err?.message ?? err}`,
+              err,
+            );
             lastError = err;
           }
         }
@@ -731,6 +740,13 @@ class AIManager {
           throw lastError instanceof Error
             ? lastError
             : new Error('No variation could be generated.');
+        }
+        if (variations.length < VARIATION_RECIPES.length) {
+          event(
+            'ai',
+            `PARTIAL — ${variations.length} of ${VARIATION_RECIPES.length} variations succeeded; ` +
+              `last failure: ${lastError instanceof Error ? lastError.message : 'unknown'}`,
+          );
         }
         return { variations };
       },

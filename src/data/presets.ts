@@ -256,11 +256,11 @@ export const NOTATION_DICTIONARY: NotationSymbol[] = [
 
 export const INSPIRATION_PROMPTS = [
   'Chill Lo-Fi beat with Rhodes chords and vinyl swing drums',
-  'Cyberpunk 80s synthwave with driving 808 kick and fast arpeggios',
+  'Cyberpunk 80s synthwave with a driving deep kick and fast arpeggios',
   'Deep hypnotic minimal techno with Euclidean hi-hats and acid bass',
-  'High-energy UK garage with syncopated 2-step drums and warm organ',
+  'High-energy UK garage with syncopated 2-step drums and warm square-wave stabs',
   'Meditative ambient drone in F Major pentatonic with lush reverb',
-  'Fast jungle breakbeat 165bpm with chopped snare rolls and 808 sub',
+  'Fast jungle breakbeat 165bpm with chopped snare rolls and a sine sub bass',
   'Bossa nova groove in F minor with soft rimshots and guitar plucks',
   'Chiptune 8-bit retro arcade boss battle in D minor with square waves'
 ];

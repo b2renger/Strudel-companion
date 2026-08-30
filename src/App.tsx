@@ -313,9 +313,22 @@ export default function App() {
   const handleGenerateAI = async (
     prompt: string,
     style: string,
-    complexity: 'Beginner' | 'Intermediate' | 'Advanced'
+    complexity: 'Beginner' | 'Intermediate' | 'Advanced',
+    tempoFromPrompt?: number,
   ) => {
-    logEvent('user', `CLICK Generate — "${prompt}" | style=${style} | complexity=${complexity} | bpm=${bpm}`);
+    // A tempo named in the prompt beats the slider. Clicking "Acid Techno
+    // (138 BPM)" used to send the model `BPM: <whatever the slider said>`,
+    // which it echoed back, so the tempo never changed all session.
+    const targetBpm = tempoFromPrompt ?? bpm;
+    if (tempoFromPrompt && tempoFromPrompt !== bpm) {
+      logEvent('user', `tempo ${tempoFromPrompt} BPM taken from the prompt (slider was ${bpm})`);
+      setBpm(tempoFromPrompt);
+      audioEngine.setBpm(tempoFromPrompt);
+    }
+    logEvent(
+      'user',
+      `CLICK Generate — "${prompt}" | style=${style} | complexity=${complexity} | bpm=${targetBpm}`,
+    );
     setIsGenerating(true);
     setErrorMessage(null);
 
@@ -326,12 +339,15 @@ export default function App() {
     audioEngine.unlock();
 
     try {
-      const result = await aiManager.generateTrack(prompt, style, complexity, bpm);
+      const result = await aiManager.generateTrack(prompt, style, complexity, targetBpm);
       const generated = result.data;
       setResultSource({ producedBy: result.producedBy, degraded: result.degraded });
       if (generated && generated.code) {
         setCodeBeforeAI(code);
         setCode(generated.code);
+        if (generated.bpm && generated.bpm !== targetBpm) {
+          logEvent('ai', `model chose ${generated.bpm} BPM (asked for ${targetBpm})`);
+        }
         if (generated.bpm) {
           setBpm(generated.bpm);
           audioEngine.setBpm(generated.bpm);
@@ -340,7 +356,7 @@ export default function App() {
           id: 'ai-generated-' + Date.now(),
           title: generated.title || 'AI Algorithmic Track',
           genre: generated.genre || style || 'Electronic',
-          bpm: generated.bpm || bpm,
+          bpm: generated.bpm || targetBpm,
           complexity: complexity,
           code: generated.code,
           description: generated.explanation || prompt,
@@ -356,7 +372,7 @@ export default function App() {
             explanation: b.meaning,
           })) || [],
           miniNotationGuide: [],
-          musicTheoryTip: `Target BPM ${generated.bpm || bpm} with layered polyphonic mini-notation structures.`,
+          musicTheoryTip: `Target BPM ${generated.bpm || targetBpm} with layered polyphonic mini-notation structures.`,
         });
 
         // Auto evaluate & play

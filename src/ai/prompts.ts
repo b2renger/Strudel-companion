@@ -58,6 +58,19 @@ const COMPLEXITY_GUIDE: Record<string, string> = {
   Advanced: "4-6 layers, Euclidean cross-rhythms, probability '?' and deep polymeter",
 };
 
+/**
+ * The style picker's default is "All Styles", which is a UI label, not a
+ * genre. It was being quoted into the prompt verbatim — the model was asked to
+ * write in the style of "All Styles" while the description said Amapiano.
+ */
+function styleLine(style: string): string {
+  const clean = (style || '').trim();
+  if (!clean || /^all styles$/i.test(clean)) {
+    return '- Style: take it from the description';
+  }
+  return `- Style: "${clean}"`;
+}
+
 function complexityLine(complexity: string): string {
   const guide = COMPLEXITY_GUIDE[complexity] || COMPLEXITY_GUIDE.Intermediate;
   return `${complexity || 'Intermediate'} (${guide})`;
@@ -120,6 +133,33 @@ WHY: one or two sentences on the groove and harmony
 NOTE: symbol or method — what it does
 NOTE: symbol or method — what it does`;
 
+/**
+ * Reads a tempo out of what the user actually asked for.
+ *
+ * The suggestion list is full of prompts that name a tempo — "138 BPM Acid
+ * Techno", "at 113 BPM" — while the BPM slider sat at whatever it happened to
+ * be. Clicking a suggestion set only the prompt text, so the request said 138
+ * and the prompt told the model `BPM: 118`. The model dutifully echoed 118,
+ * and every generation in a whole session came out at the same tempo.
+ *
+ * Free text works too: "make me something at 90 bpm" now means 90.
+ */
+export function extractBpmFromPrompt(text: string): number | null {
+  if (!text) return null;
+  const patterns = [
+    /(\d{2,3})\s*(?:bpm|beats\s+per\s+minute)\b/i,
+    /\bbpm\b\s*[:=]?\s*(\d{2,3})/i,
+    /\bat\s+(\d{2,3})\b(?!\s*%)/i,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n >= 40 && n <= 240) return n;
+  }
+  return null;
+}
+
 export function buildGeneratePrompt(
   prompt: string,
   style: string,
@@ -128,7 +168,7 @@ export function buildGeneratePrompt(
 ): string {
   return `TASK: compose a Strudel pattern.
 - Description: "${prompt}"
-- Style: "${style || 'Electronic'}"
+${styleLine(style)}
 - Skill level: ${complexityLine(complexity)}
 - BPM: ${tempo || 120} — but if the description names a different tempo, follow
   the description and report that number on the BPM line.

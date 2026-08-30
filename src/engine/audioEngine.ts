@@ -632,7 +632,12 @@ class StrudelAudioEngine {
       for (const stream of this.splitTopLevelCommas(layer.pattern)) {
         let events: ResolvedEvent[];
         try {
-          events = this.expandTokensToEvents(this.tokenizeMiniNotation(stream.trim(), 0), 0, 1);
+          events = this.expandTokensToEvents(
+            this.tokenizeMiniNotation(stream.trim(), 0),
+            0,
+            1,
+            true,
+          );
         } catch {
           // A malformed stream is the validator's problem, not this audit's.
           continue;
@@ -749,7 +754,20 @@ class StrudelAudioEngine {
     return result;
   }
 
-  private expandTokensToEvents(tokens: string[], start: number, duration: number): ResolvedEvent[] {
+  /**
+   * `includeAll` forces probabilistic steps (`cp?`) to be emitted.
+   *
+   * Playback wants the coin flip; the playability audit does not — with the
+   * flip in play, `s("bd*4 rhodes?")` reported "rhodes" as silent about half
+   * the time, so the amber warning appeared or not at random for the same
+   * pattern.
+   */
+  private expandTokensToEvents(
+    tokens: string[],
+    start: number,
+    duration: number,
+    includeAll = false,
+  ): ResolvedEvent[] {
     const events: ResolvedEvent[] = [];
     if (tokens.length === 0) return events;
 
@@ -780,7 +798,7 @@ class StrudelAudioEngine {
       if (probMatch) {
         token = token.replace(/\?\s*[\d.]*\s*$/, '');
         const chance = probMatch[1] ? parseFloat(probMatch[1]) : 0.5;
-        if (Math.random() > (Number.isFinite(chance) ? chance : 0.5)) continue;
+        if (!includeAll && Math.random() > (Number.isFinite(chance) ? chance : 0.5)) continue;
       }
 
       // Rest
@@ -790,7 +808,7 @@ class StrudelAudioEngine {
       if (token.startsWith('[') && token.endsWith(']')) {
         const inner = token.slice(1, -1);
         const subTokens = this.tokenizeMiniNotation(inner, 0);
-        const subEvents = this.expandTokensToEvents(subTokens, slotStart, slotDuration);
+        const subEvents = this.expandTokensToEvents(subTokens, slotStart, slotDuration, includeAll);
         events.push(...subEvents);
         continue;
       }

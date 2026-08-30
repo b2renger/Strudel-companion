@@ -30,7 +30,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Amapiano Log-Drum & Gospel Keys (113 BPM)',
     description: 'Syncopated log-drum bassline with cabasa polyrhythms, rim accents, and lush piano 9th chords.',
-    promptText: 'Deep South African Amapiano groove at 113 BPM with heavy percussive log drum bass, syncopated cabasa shaker, and gospel piano chords',
+    promptText: 'Deep South African Amapiano groove at 113 BPM with heavy percussive log drum bass, syncopated shaker, and gospel piano chords',
     tags: ['Amapiano', 'Afrobeat', 'Log Drum', '113 BPM', 'Percussive'],
   },
   {
@@ -38,7 +38,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Japanese Koto & Hirajoshi Zen Garden (76 BPM)',
     description: 'Serene meditative composition in the traditional 5-note Hirajoshi scale with singing bowl sub drone.',
-    promptText: 'Meditative Japanese Zen ambient in Hirajoshi pentatonic scale with delicate Koto plucks, singing bowl sub drone, and spacious temple reverb',
+    promptText: 'Meditative Japanese Zen ambient at 76 BPM in Hirajoshi pentatonic scale with delicate bell-like plucks, a singing sine sub drone, and spacious temple reverb',
     tags: ['Japanese', 'Koto', 'Hirajoshi', 'Zen', 'Ambient', 'Meditation'],
   },
   {
@@ -62,7 +62,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Math Rock 7/8 Polymetric Phasing (130 BPM)',
     description: 'Irregular meter cross-rhythms with clean melodic guitar plucks and phased syncopation.',
-    promptText: 'Complex Math Rock groove in 7/8 time signature with clean polyrhythmic guitar plucks, syncopated drums, and melodic bass',
+    promptText: 'Complex Math Rock groove at 130 BPM in 7/8 time signature with clean polyrhythmic plucks, syncopated drums, and melodic bass',
     tags: ['Math Rock', '7/8', 'Polymeter', 'Odd Meter', 'Intricate'],
   },
   {
@@ -70,7 +70,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Chicago Footwork / Juke (160 BPM)',
     description: 'High-speed syncopated tom matrix with rapid triplet claps and sub 808 bass stabs.',
-    promptText: 'High-energy Chicago Footwork at 160 BPM with syncopated triplet tom patterns, rapid fire claps, and sub 808 bass stabs',
+    promptText: 'High-energy Chicago Footwork at 160 BPM with syncopated triplet tom patterns, rapid fire claps, and deep sine sub bass stabs',
     tags: ['Footwork', 'Juke', '160 BPM', 'Fast', 'Syncopated', '808'],
   },
   {
@@ -78,7 +78,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: '303 Acid Techno Rave (138 BPM)',
     description: 'Relentless 4/4 kick, 16th-note 303 resonant filter squelch, and Euclidean hi-hats.',
-    promptText: 'High-energy 138 BPM Acid Techno with squelchy resonant 303 sawtooth bassline, driving 909 kick, and crisp Euclidean hi-hats',
+    promptText: 'High-energy 138 BPM Acid Techno with a squelchy resonant sawtooth bassline under a fast low-pass envelope, a driving kick, and crisp Euclidean hi-hats',
     tags: ['Techno', '303', 'Acid', '138 BPM', 'Sawtooth'],
   },
   {
@@ -94,7 +94,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Skippy 2-Step UK Garage (132 BPM)',
     description: 'Syncopated swing shuffle, Reese bass stabs, and vocal glitch chops.',
-    promptText: 'Skippy UK Garage 2-step rhythm at 132 BPM with syncopated ghost snares, deep Reese bassline, and warm organ stabs',
+    promptText: 'Skippy UK Garage 2-step rhythm at 132 BPM with syncopated ghost snares, a deep detuned sawtooth bassline, and warm square-wave stabs',
     tags: ['UKG', '2-Step', 'Syncopated', 'Reese', '132 BPM'],
   },
   {
@@ -118,7 +118,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Full Composition',
     title: 'Amen Break Jungle / Drum & Bass (165 BPM)',
     description: 'Rapid chopped breakbeats, alternating 808 sub glide, and dub echoes.',
-    promptText: 'Fast 165 BPM Jungle breakbeat with chopped syncopated drums, deep 808 sub bass glides, and dub echo stabs',
+    promptText: 'Fast 165 BPM Jungle breakbeat with chopped syncopated drums, deep sine sub bass glides, and dub echo stabs',
     tags: ['Jungle', 'DnB', '165 BPM', 'Fast', 'Sub Bass'],
   },
 
@@ -178,7 +178,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
     category: 'Instruments & Synths',
     title: 'Supersaw Trance & Future Bass Plucks',
     description: 'Detuned polyphonic saws with bright decay and stereo spread.',
-    promptText: 'with bright detuned supersaw synth plucks and wide stereo panning',
+    promptText: 'with bright detuned sawtooth plucks and wide stereo panning',
     tags: ['Supersaw', 'Plucks', 'Trance', 'Stereo'],
   },
 
@@ -236,7 +236,7 @@ export const SUGGESTIONS_DATABASE: SuggestionItem[] = [
 ];
 
 export const QUICK_ADD_MODIFIERS = [
-  { label: '+ 303 Acid Bass', snippet: 'with resonant 303 acid sawtooth bassline' },
+  { label: '+ Acid Bass', snippet: 'with a resonant acid sawtooth bassline and a fast filter envelope' },
   { label: '+ Euclidean (5,8) Hats', snippet: 'with Euclidean (5,8) hi-hat polyrhythm' },
   { label: '+ Lush Tape Delay', snippet: 'with 1/8 note tape delay and room reverb' },
   { label: '+ Jazzy 7th Chords', snippet: 'with lush jazzy 7th chord voicings' },
@@ -291,7 +291,7 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
   const handleSurpriseMe = () => {
     const genres = [
       'Lo-Fi jazzy chillhop',
-      'High-energy Acid 303 Techno at 138 BPM',
+      'High-energy Acid Techno at 138 BPM',
       'Skippy 2-step UK Garage at 132 BPM',
       '80s Outrun Synthwave with analog brass',
       'Generative Ambient drone with temple bells',
@@ -325,7 +325,7 @@ export const PromptSuggestionEngine: React.FC<PromptSuggestionEngineProps> = ({
       'with ping-pong tape delay and lush room reverb',
       'with dynamic low-pass filter cutoff sweeps',
       'with vintage vinyl warmth and subtle swing',
-      'with resonant 303 filter sweeps and stereo spread',
+      'with resonant low-pass filter sweeps and stereo spread',
       'with deep spatial temple reverberation',
     ];
 

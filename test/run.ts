@@ -31,10 +31,15 @@ import {
   buildGeneratePrompt,
   buildTweakPrompt,
   withSystemPrompt,
+  extractBpmFromPrompt,
   STRUDEL_SYNTAX_CARD,
   STRUDEL_SYSTEM_PROMPT,
 } from '../src/ai/prompts.ts';
-import { STARTER_PRESETS } from '../src/data/presets.ts';
+import { STARTER_PRESETS, INSPIRATION_PROMPTS } from '../src/data/presets.ts';
+import {
+  SUGGESTIONS_DATABASE,
+  QUICK_ADD_MODIFIERS,
+} from '../src/components/PromptSuggestionEngine.tsx';
 import {
   parseStrudelCodeToTokens,
   findTokenExactRange,
@@ -70,7 +75,14 @@ async function runAll() {
       await fn();
       passed++;
     } catch (err: any) {
-      failures.push(`${name}\n    ${err?.message?.split('\n')[0] ?? err}`);
+      // The whole message, indented — not just its first line. A multi-line
+      // assertion message (the list of everything that failed, say) was being
+      // truncated to its useless first line.
+      const message = String(err?.message ?? err)
+        .split('\n')
+        .map((line: string) => `    ${line.trim()}`)
+        .join('\n');
+      failures.push(`${name}\n${message}`);
     }
   }
 }
@@ -751,6 +763,62 @@ test('an incomplete pattern never stops generation', () => {
   assert.equal(completionIsDone('stack(\n  s("bd*4"),\n  note("<c2 eb2'), null);
   assert.equal(completionIsDone(FENCE + 'strudel\nstack(\n  s("bd*4"),'), null);
   assert.equal(completionIsDone('Sure! Let me write you a pattern.'), null);
+});
+
+test('no prompt shown to the user names a sound the engine cannot make', () => {
+  // vocabulary.ts tells the model these names are unsupported, and then the
+  // suggestion list handed it "303 sawtooth bassline" and "warm organ stabs"
+  // to copy. Contradictory demonstration, same failure mode as the comments —
+  // and the direct upstream cause of s("303") and s("sub bass") in the trace.
+  const forbidden = /\b(cabasa|supersaw|marimba|vibraphone|organ|koto|808|909|303|glitch)\b/i;
+  const offenders: string[] = [];
+  for (const item of SUGGESTIONS_DATABASE) {
+    if (forbidden.test(item.promptText)) offenders.push(`${item.id}: ${item.promptText}`);
+  }
+  for (const mod of QUICK_ADD_MODIFIERS) {
+    if (forbidden.test(mod.snippet)) offenders.push(`modifier "${mod.label}": ${mod.snippet}`);
+  }
+  for (const p of INSPIRATION_PROMPTS) {
+    if (forbidden.test(p)) offenders.push(`inspiration: ${p}`);
+  }
+  assert.equal(offenders.length, 0, `\n    ${offenders.join('\n    ')}`);
+});
+
+test('a tempo named in the prompt is found', () => {
+  assert.equal(extractBpmFromPrompt('High-energy 138 BPM Acid Techno'), 138);
+  assert.equal(extractBpmFromPrompt('Deep Amapiano groove at 113 BPM with log drums'), 113);
+  assert.equal(extractBpmFromPrompt('make me something at 90 bpm'), 90);
+  assert.equal(extractBpmFromPrompt('Fast jungle breakbeat 165bpm'), 165);
+  assert.equal(extractBpmFromPrompt('bpm: 128'), 128);
+});
+
+test('a tempo is not invented from unrelated numbers', () => {
+  assert.equal(extractBpmFromPrompt('Math Rock in 7/8 time'), null);
+  assert.equal(extractBpmFromPrompt('with Euclidean (5,8) hi-hats'), null);
+  assert.equal(extractBpmFromPrompt('minor 9th chord voicings'), null);
+  assert.equal(extractBpmFromPrompt('at 5000 bpm'), null, 'out of musical range');
+  assert.equal(extractBpmFromPrompt(''), null);
+});
+
+test('every suggestion that names a tempo in its title agrees with its prompt', () => {
+  const mismatched: string[] = [];
+  for (const item of SUGGESTIONS_DATABASE) {
+    const inTitle = /\((\d{2,3}) BPM\)/.exec(item.title);
+    if (!inTitle) continue;
+    const fromText = extractBpmFromPrompt(item.promptText);
+    if (fromText !== Number(inTitle[1])) {
+      mismatched.push(`${item.id}: title says ${inTitle[1]}, prompt text gives ${fromText}`);
+    }
+  }
+  assert.equal(mismatched.length, 0, `\n    ${mismatched.join('\n    ')}`);
+});
+
+test('"All Styles" is never quoted to the model as a genre', () => {
+  const built = buildGeneratePrompt('deep amapiano', 'All Styles', 'Intermediate', 113);
+  assert.ok(!built.includes('"All Styles"'), 'the UI label reached the prompt');
+  assert.ok(/take it from the description/.test(built));
+  // A real style still comes through.
+  assert.ok(buildGeneratePrompt('x', 'Techno', 'Intermediate', 130).includes('"Techno"'));
 });
 
 // ---------------------------------------------------------------------------

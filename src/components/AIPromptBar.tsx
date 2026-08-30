@@ -3,11 +3,18 @@ import { statusText } from '../ai/progressText';
 import { Sparkles, Wand2, Compass, Loader2, ArrowRight, Lightbulb, X, Tag } from 'lucide-react';
 import { INSPIRATION_PROMPTS } from '../data/presets';
 import { PromptSuggestionEngine, QUICK_ADD_MODIFIERS } from './PromptSuggestionEngine';
+import { extractBpmFromPrompt } from '../ai/prompts';
 
 import { AIEngineProgress } from '../types';
 
 interface AIPromptBarProps {
-  onGenerate: (prompt: string, style: string, complexity: 'Beginner' | 'Intermediate' | 'Advanced') => void;
+  onGenerate: (
+    prompt: string,
+    style: string,
+    complexity: 'Beginner' | 'Intermediate' | 'Advanced',
+    /** Tempo named in the prompt text, when there is one. */
+    tempo?: number,
+  ) => void;
   isLoading: boolean;
   aiProgress?: AIEngineProgress;
 }
@@ -15,7 +22,11 @@ interface AIPromptBarProps {
 export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading, aiProgress }) => {
   const [prompt, setPrompt] = useState('');
   const [selectedStyle, setSelectedStyle] = useState('All Styles');
-  const [complexity, setComplexity] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Beginner');
+  // Was 'Beginner', which caps every first generation at 2-3 layers with no
+  // polymeter — while most of the suggestion list describes exactly the
+  // material that rules out. A whole session ran at Beginner without the user
+  // ever choosing it.
+  const [complexity, setComplexity] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const promptBarRef = useRef<HTMLDivElement>(null);
 
@@ -23,7 +34,8 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
     e.preventDefault();
     if (!prompt.trim() && !selectedStyle) return;
     setIsSuggestionsOpen(false);
-    onGenerate(prompt || `Groovy ${selectedStyle} algorithmic pattern`, selectedStyle, complexity);
+    const text = prompt || `Groovy ${selectedStyle} algorithmic pattern`;
+    onGenerate(text, selectedStyle, complexity, extractBpmFromPrompt(text) ?? undefined);
   };
 
   const handleSelectSuggestion = (newPrompt: string) => {
@@ -33,7 +45,7 @@ export const AIPromptBar: React.FC<AIPromptBarProps> = ({ onGenerate, isLoading,
   /** Surprise Me: fill the box AND generate, in one action. */
   const handleSurprise = (newPrompt: string) => {
     setPrompt(newPrompt);
-    onGenerate(newPrompt, selectedStyle, complexity);
+    onGenerate(newPrompt, selectedStyle, complexity, extractBpmFromPrompt(newPrompt) ?? undefined);
   };
 
   const handleAppendModifier = (modifier: string) => {
