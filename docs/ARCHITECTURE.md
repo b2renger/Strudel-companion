@@ -510,6 +510,37 @@ regression wearing a safety measure's clothes — and an earlier, flatter versio
 of the nesting rules did exactly that, rejecting 24 of 144 patterns because it
 allowed a suffix on a single hit but not on a group.
 
+### Harmony is voice-led, and can leave the scale
+
+Chords are built in absolute semitones rather than note names, because every
+interesting harmonic operation — inverting a chord, measuring how far two
+voicings are apart, borrowing from another key — is arithmetic on intervals.
+Doing it on strings means re-parsing them at each step.
+
+**Voice leading** is the audible one. Root-position chords make a progression
+lurch: every chord restarts on its own root, nothing is held, and i-VI-iv-V
+sounds like four unrelated chords. `voiceLead()` picks the inversion nearest the
+previous voicing, which on that progression in C minor cuts total voice movement
+from **41 semitones to 9**. The tests assert the reduction, and separately that
+re-voicing never changes which pitch classes are in a chord — moving a voice by
+an octave is a re-voicing; changing the notes is a different chord.
+
+**Secondary dominants** replace a chord that would otherwise repeat with the
+dominant of the one that follows — the strongest pull in tonal music, and
+unreachable from scale degrees alone. **Modal interchange** occasionally borrows
+bVI or bVII. Both are tested by asserting a chromatic tone actually appears, and
+that with the options off everything stays diatonic; an option that quietly
+changes nothing is worse than no option.
+
+`tensionCurve()` gives a phrase an arc — a rise to about three quarters and a
+release — so eight bars feel like a phrase rather than the same bar eight times.
+
+One artifact worth recording: a seventh built on a five- or six-note scale can
+already span more than an octave, and inverting it then lands on a pitch the
+chord already had. That reached the editor as `[c#4 f4 f4 a4]` — a wasted voice
+rather than a doubling anyone chose. Voicings are de-duplicated, and a test
+covers every scale in the catalogue.
+
 ## Verification checklist
 
 `npm test` covers the pure logic — parsers, validators, vocabulary. The list

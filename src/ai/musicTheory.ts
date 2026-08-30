@@ -122,6 +122,185 @@ export const PROGRESSIONS: number[][] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Voice leading and chromatic harmony
+// ---------------------------------------------------------------------------
+
+/**
+ * Absolute semitone for a scale degree, where 0 is C at octave 0.
+ *
+ * Chords are computed in absolute semitones rather than note names because
+ * every interesting harmonic operation — inverting a chord, measuring how far
+ * two voicings are apart, borrowing a chord from another key — is arithmetic on
+ * intervals. Doing it on strings means re-parsing them at every step.
+ */
+export function degreeToSemitone(
+  root: string,
+  scale: ScaleKey,
+  degree: number,
+  octave: number,
+): number {
+  const steps = SCALES[scale].steps;
+  const len = steps.length;
+  const octaveShift = Math.floor(degree / len);
+  return (octave + octaveShift) * 12 + rootIndex(root) + steps[((degree % len) + len) % len];
+}
+
+export function semitoneToNote(semitone: number): string {
+  const octave = Math.floor(semitone / 12);
+  return `${NOTE_NAMES[((semitone % 12) + 12) % 12]}${octave}`;
+}
+
+/** Distinct pitches, low to high. */
+function uniqueSorted(chord: readonly number[]): number[] {
+  return [...new Set(chord)].sort((a, b) => a - b);
+}
+
+/** A chord, as a bracketed mini-notation group. */
+export function renderChord(semitones: readonly number[]): string {
+  return `[${uniqueSorted(semitones).map(semitoneToNote).join(' ')}]`;
+}
+
+/**
+ * Every inversion of a chord, plus the octave either side of it.
+ *
+ * Each rotation is de-duplicated. A seventh built on a five- or six-note scale
+ * can already span more than an octave, and moving its lowest voice up then
+ * lands exactly on a note the chord already has — which reached the editor as
+ * `[c#4 f4 f4 a4]`, a wasted voice rather than a doubling anyone chose.
+ */
+function inversionsOf(chord: readonly number[]): number[][] {
+  const sorted = uniqueSorted(chord);
+  const rotations: number[][] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    // Move the lowest i notes up an octave.
+    rotations.push(uniqueSorted(sorted.map((n, j) => (j < i ? n + 12 : n))));
+  }
+  return rotations.flatMap((r) => [r.map((n) => n - 12), r, r.map((n) => n + 12)]);
+}
+
+/** Total semitone movement between two voicings of the same size. */
+function voiceDistance(a: readonly number[], b: readonly number[]): number {
+  const x = [...a].sort((p, q) => p - q);
+  const y = [...b].sort((p, q) => p - q);
+  let total = 0;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) total += Math.abs(x[i] - y[i]);
+  // Chords of different sizes (a triad following a seventh) still need a cost.
+  total += Math.abs(x.length - y.length) * 6;
+  return total;
+}
+
+/**
+ * Re-voices a progression so each chord moves as little as possible from the
+ * one before it.
+ *
+ * Root-position chords make a progression lurch: every chord restarts at its
+ * own root, so ii-V-I leaps around instead of the common tones holding still
+ * and one or two voices stepping. This is the difference between a progression
+ * that sounds composed and one that sounds like a chord chart, and it is the
+ * single most audible thing missing from the composer's harmony.
+ *
+ * The first chord is placed nearest `centre` so a progression does not start in
+ * an arbitrary register.
+ */
+export function voiceLead(chords: readonly number[][], centre: number): number[][] {
+  const out: number[][] = [];
+  let previous: number[] | null = null;
+
+  for (const chord of chords) {
+    if (chord.length === 0) {
+      out.push([]);
+      continue;
+    }
+    const candidates = inversionsOf(chord);
+    const reference =
+      previous ?? Array.from({ length: chord.length }, () => centre);
+    let best = candidates[0];
+    let bestCost = Infinity;
+    for (const candidate of candidates) {
+      const cost = voiceDistance(candidate, reference);
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = candidate;
+      }
+    }
+    out.push(best);
+    previous = best;
+  }
+  return out;
+}
+
+export interface HarmonyOptions {
+  seventh: boolean;
+  /**
+   * Insert a dominant chord a fifth above the NEXT chord, in place of a repeat.
+   * The strongest pull in tonal music, and entirely absent from a progression
+   * built only from scale degrees.
+   */
+  secondaryDominants: boolean;
+  /**
+   * Borrow bVI or bVII from the parallel mode. One chromatic chord is what
+   * separates a modal loop from a modal loop that goes somewhere.
+   */
+  modalInterchange: boolean;
+}
+
+/**
+ * Builds a progression as absolute semitones, optionally with chromatic
+ * substitutions, then voice-leads the result.
+ */
+export function buildProgression(
+  root: string,
+  scale: ScaleKey,
+  degrees: readonly number[],
+  octave: number,
+  options: HarmonyOptions,
+  rng?: Rng,
+): number[][] {
+  const tones = options.seventh ? [0, 2, 4, 6] : [0, 2, 4];
+  const tonic = degreeToSemitone(root, scale, 0, octave);
+
+  const chords: number[][] = degrees.map((degree) =>
+    tones.map((t) => degreeToSemitone(root, scale, degree + t, octave)),
+  );
+
+  if (rng) {
+    for (let i = 0; i < chords.length - 1; i++) {
+      // A secondary dominant only makes sense where it resolves, so it replaces
+      // a chord that repeats the one after it.
+      if (options.secondaryDominants && degrees[i] === degrees[i + 1] && chance(rng, 0.7)) {
+        const target = degreeToSemitone(root, scale, degrees[i + 1], octave);
+        const dominantRoot = target + 7;
+        chords[i] = options.seventh
+          ? [dominantRoot, dominantRoot + 4, dominantRoot + 7, dominantRoot + 10]
+          : [dominantRoot, dominantRoot + 4, dominantRoot + 7];
+      } else if (options.modalInterchange && i > 0 && chance(rng, 0.25)) {
+        const borrowed = pick(rng, [8, 10]); // bVI and bVII, as major triads
+        const borrowedRoot = tonic + borrowed;
+        chords[i] = [borrowedRoot, borrowedRoot + 4, borrowedRoot + 7];
+      }
+    }
+  }
+
+  return voiceLead(chords, tonic + 12);
+}
+
+/**
+ * A tension curve across a phrase, in 0..1.
+ *
+ * The composer previously treated every cycle as independent, so a pattern was
+ * the same intensity forever. Multiplying a filter cutoff or a gain by this
+ * gives a phrase an arc — a rise across the bars and a release at the end —
+ * which is what makes eight bars feel like a phrase rather than a loop.
+ */
+export function tensionCurve(bars: number): number[] {
+  return Array.from({ length: bars }, (_, i) => {
+    const t = bars === 1 ? 0 : i / (bars - 1);
+    // Rises to a peak at three quarters, then falls back — a shape, not a ramp.
+    return Math.sin(Math.PI * Math.min(1, t / 0.75)) * 0.85 + t * 0.15;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Rhythm
 // ---------------------------------------------------------------------------
 

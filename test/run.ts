@@ -23,6 +23,14 @@ import {
   AIParseError,
 } from '../src/ai/outputParser.ts';
 import { composeTrack, PROCEDURAL_GENRES } from '../src/ai/proceduralComposer.ts';
+import {
+  buildProgression,
+  voiceLead,
+  renderChord,
+  degreeToSemitone,
+  tensionCurve,
+  makeRng,
+} from '../src/ai/musicTheory.ts';
 import { VARIATION_RECIPES, buildVariationPrompt, buildCompactVariationPrompt } from '../src/ai/prompts.ts';
 import {
   buildCompactGeneratePrompt,
@@ -1597,6 +1605,136 @@ test('the grammar names every sound the engine can play, and nothing else', () =
   for (const forbidden of ['303', '808', 'supersaw', 'cabasa', 'organ', 'delaytime']) {
     assert.ok(!text.includes(`"${forbidden}"`), `the grammar can spell "${forbidden}"`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Harmony.
+// ---------------------------------------------------------------------------
+
+/** Total semitone movement between consecutive voicings. */
+function voiceMovement(chords: readonly number[][]): number {
+  let total = 0;
+  for (let i = 1; i < chords.length; i++) {
+    const a = [...chords[i - 1]].sort((x, y) => x - y);
+    const b = [...chords[i]].sort((x, y) => x - y);
+    for (let j = 0; j < Math.min(a.length, b.length); j++) total += Math.abs(a[j] - b[j]);
+  }
+  return total;
+}
+
+test('voice leading moves the voices far less than root position', () => {
+  // The whole point. Root position restarts every chord on its own root, so a
+  // progression lurches instead of holding common tones.
+  for (const degrees of [[0, 5, 3, 4], [0, 3, 4, 4], [5, 3, 0, 4], [0, 6, 3, 4]]) {
+    const rootPosition = degrees.map((d) =>
+      [0, 2, 4].map((t) => degreeToSemitone('c', 'minor', d + t, 3)),
+    );
+    const led = voiceLead(rootPosition, degreeToSemitone('c', 'minor', 0, 4));
+    assert.ok(
+      voiceMovement(led) < voiceMovement(rootPosition) * 0.6,
+      `${degrees}: ${voiceMovement(rootPosition)} -> ${voiceMovement(led)} is not an improvement`,
+    );
+  }
+});
+
+test('voice leading preserves the actual chords', () => {
+  // Moving a voice by an octave is a re-voicing; changing which notes are in
+  // the chord is a different chord.
+  const degrees = [0, 5, 3, 4];
+  const original = degrees.map((d) => [0, 2, 4].map((t) => degreeToSemitone('c', 'minor', d + t, 3)));
+  const led = voiceLead(original, degreeToSemitone('c', 'minor', 0, 4));
+  for (let i = 0; i < original.length; i++) {
+    const before = new Set(original[i].map((n) => ((n % 12) + 12) % 12));
+    const after = new Set(led[i].map((n) => ((n % 12) + 12) % 12));
+    assert.deepEqual([...after].sort(), [...before].sort(), `chord ${i} changed identity`);
+  }
+});
+
+test('a chord never contains the same pitch twice', () => {
+  // A seventh built on a five- or six-note scale can span more than an octave,
+  // and inverting it then lands on a note it already had: `[c#4 f4 f4 a4]`.
+  for (const scale of ['minor', 'hirajoshi', 'wholeTone', 'pentatonicMin', 'blues'] as const) {
+    for (let seed = 0; seed < 20; seed++) {
+      const chords = buildProgression(
+        'c',
+        scale,
+        [0, 5, 3, 4],
+        3,
+        { seventh: true, secondaryDominants: true, modalInterchange: true },
+        makeRng(seed),
+      );
+      for (const chord of chords) {
+        assert.equal(new Set(chord).size, chord.length, `${scale} seed ${seed}: duplicate pitch`);
+        assert.ok(chord.length >= 3, `${scale} seed ${seed}: chord collapsed to ${chord.length}`);
+      }
+    }
+  }
+});
+
+test('secondary dominants introduce a note outside the scale', () => {
+  // If every chord still comes from the scale, nothing has been borrowed and
+  // the option is decorative.
+  const scaleTones = new Set(
+    Array.from({ length: 7 }, (_, d) => degreeToSemitone('c', 'minor', d, 3) % 12),
+  );
+  let sawChromatic = false;
+  for (let seed = 0; seed < 30 && !sawChromatic; seed++) {
+    const chords = buildProgression(
+      'c',
+      'minor',
+      [0, 0, 3, 4],
+      3,
+      { seventh: false, secondaryDominants: true, modalInterchange: false },
+      makeRng(seed),
+    );
+    sawChromatic = chords.some((c) => c.some((n) => !scaleTones.has(((n % 12) + 12) % 12)));
+  }
+  assert.ok(sawChromatic, 'no secondary dominant ever produced a chromatic tone');
+
+  // And with the option off, everything stays diatonic.
+  const plain = buildProgression('c', 'minor', [0, 0, 3, 4], 3, {
+    seventh: false,
+    secondaryDominants: false,
+    modalInterchange: false,
+  });
+  for (const chord of plain) {
+    for (const n of chord) {
+      assert.ok(scaleTones.has(((n % 12) + 12) % 12), 'a chromatic tone appeared uninvited');
+    }
+  }
+});
+
+test('every voiced chord renders as notation the engine can read', () => {
+  for (const scale of ['minor', 'lydian', 'hirajoshi', 'wholeTone'] as const) {
+    for (let seed = 0; seed < 10; seed++) {
+      const chords = buildProgression(
+        'c',
+        scale,
+        [0, 5, 3, 4],
+        3,
+        { seventh: true, secondaryDominants: true, modalInterchange: true },
+        makeRng(seed),
+      );
+      for (const chord of chords) {
+        const rendered = renderChord(chord);
+        assert.match(
+          rendered,
+          /^\[(?:[a-g][#b]?[0-8] )*[a-g][#b]?[0-8]\]$/,
+          `unreadable chord: ${rendered}`,
+        );
+      }
+    }
+  }
+});
+
+test('the tension curve rises and releases', () => {
+  const curve = tensionCurve(8);
+  assert.equal(curve.length, 8);
+  const peak = curve.indexOf(Math.max(...curve));
+  assert.ok(peak > 1 && peak < 6, `the peak is at bar ${peak + 1}, which is not an arc`);
+  assert.ok(curve[curve.length - 1] < Math.max(...curve) * 0.6, 'it never releases');
+  for (const v of curve) assert.ok(v >= 0 && v <= 1.05, `${v} is outside 0..1`);
+  assert.equal(tensionCurve(1).length, 1, 'a one-bar phrase must not divide by zero');
 });
 
 // ---------------------------------------------------------------------------

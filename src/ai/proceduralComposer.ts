@@ -20,7 +20,8 @@ import {
   ScaleKey,
   ROOTS,
   degreeToNote,
-  chordOnDegree,
+  buildProgression,
+  renderChord,
   PROGRESSIONS,
   KICK_PATTERNS,
   SNARE_PATTERNS,
@@ -145,7 +146,30 @@ export function composeTrack(
   );
 
   // --- Harmony -----------------------------------------------------------
-  const chords = progression.map((deg) => chordOnDegree(root, scale, deg, recipe.chordOctave, seventh));
+  //
+  // Voice-led, not root position. Building every chord from its own root makes
+  // a progression lurch: nothing is held, every voice leaps, and ii-V-I sounds
+  // like three unrelated chords. `buildProgression` picks the inversion nearest
+  // the previous voicing, which on a i-VI-iv-V in C minor cuts total voice
+  // movement from 41 semitones to 9 — the difference between a progression and
+  // a chord chart.
+  //
+  // It also allows two chromatic substitutions: a secondary dominant where a
+  // chord would otherwise repeat (the strongest pull in tonal music, and
+  // impossible to reach from scale degrees alone) and an occasional borrowed
+  // bVI or bVII.
+  const chords = buildProgression(
+    root,
+    scale,
+    progression,
+    recipe.chordOctave,
+    {
+      seventh,
+      secondaryDominants: chance(rng, 0.5),
+      modalInterchange: chance(rng, 0.35),
+    },
+    rng,
+  ).map(renderChord);
   lines.push(
     `  note("<${chords.join(' ')}>").s("${recipe.voice}").lpf(${lpf})` +
       `.decay(${range(rng, [0.3, 0.8], 2)}).room(${room}).gain(${range(rng, [0.55, 0.75], 2)}),`,
