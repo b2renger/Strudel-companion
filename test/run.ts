@@ -85,7 +85,7 @@ import {
   estimateBytes,
 } from '../src/ml/modelConfig.ts';
 import { prebuiltAppConfig } from '@mlc-ai/web-llm';
-import { clamp } from '../src/engine/audioEngine.ts';
+import { clamp, audioEngine } from '../src/engine/audioEngine.ts';
 import {
   buildHeuristicVariations,
   splitPattern,
@@ -491,6 +491,71 @@ test('composed patterns only use implemented sounds', () => {
       for (const m of code.matchAll(/\.s\("([^"]+)"\)/g)) {
         assert.ok(KNOWN_SYNTHS.has(m[1]), `${genre}: unknown synth "${m[1]}"`);
       }
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Audio engine — what the mini-notation actually plays
+// ---------------------------------------------------------------------------
+// Turning a pattern into timed events touches no AudioContext, so the engine's
+// own path is reachable from Node through its private methods. Going through
+// it matters: the test above strips brackets before checking names, which is
+// how the composer's chords passed here while the engine played `[a3` (not a
+// note) in silence.
+
+const engine = audioEngine as any;
+const silentIn = (code: string): string[] =>
+  engine.auditPlayability(engine.parseStrudelCode(code));
+const playedAt = (pattern: string, cycle: number): string =>
+  engine
+    .resolveLayerEvents({ pattern, speedMultiplier: 1 }, cycle, 16)
+    .map((e: any) => `${e.item}@${Math.round(e.timeOffset * 1000) / 1000}`)
+    .join(' ');
+
+test('a chord progression in an alternation plays one whole chord per cycle', () => {
+  assert.equal(playedAt('<[a3 c4 e4] [f3 a3 c4]>', 0), 'a3@0 c4@0.333 e4@0.667');
+  assert.equal(playedAt('<[a3 c4 e4] [f3 a3 c4]>', 1), 'f3@0 a3@0.333 c4@0.667');
+  assert.equal(playedAt('<[a3 c4 e4] [f3 a3 c4]>', 2), 'a3@0 c4@0.333 e4@0.667');
+});
+
+test('an alternation counts groups, not the words inside them', () => {
+  assert.equal(playedAt('<f2 [d2 d3] a1 e2>', 1), 'd2@0 d3@0.5');
+  assert.equal(playedAt('<f2 [d2 d3] a1 e2>', 3), 'e2@0');
+  assert.equal(playedAt('<f2 [d2 d3] a1 e2>', 4), 'f2@0');
+});
+
+test('a group with a multiplier repeats the whole group', () => {
+  assert.equal(playedAt('[hh oh]*2', 0), 'hh@0 oh@0.25 hh@0.5 oh@0.75');
+  assert.equal(playedAt('bd [hh oh]*2', 0), 'bd@0 hh@0.5 oh@0.625 hh@0.75 oh@0.875');
+});
+
+test('an alternation with a multiplier steps through it, as Strudel does', () => {
+  assert.equal(playedAt('<c2 eb2 f2 g2>*2', 0), 'c2@0 eb2@0.5');
+  assert.equal(playedAt('<c2 eb2 f2 g2>*2', 1), 'f2@0 g2@0.5');
+  assert.equal(playedAt('<c2 [eb2 c2]>*2', 0), 'c2@0 eb2@0.5 c2@0.75');
+});
+
+test('a nested alternation advances only on the cycles that select it', () => {
+  const seq = [0, 1, 2, 3].map((c) => playedAt('<c3 <e3 g3>>', c));
+  assert.deepEqual(seq, ['c3@0', 'e3@0', 'c3@0', 'g3@0']);
+});
+
+test('the silence audit looks past the first cycle', () => {
+  assert.deepEqual(silentIn('note("<c3 rhodes>").s("piano")'), ['rhodes']);
+});
+
+test('no starter preset has a silent token', () => {
+  for (const preset of STARTER_PRESETS) {
+    assert.deepEqual(silentIn(preset.code), [], preset.title);
+  }
+});
+
+test('no composed pattern has a silent token', () => {
+  for (const genre of PROCEDURAL_GENRES) {
+    for (let i = 0; i < 25; i++) {
+      const { code } = composeTrack(genre, undefined, i * 7919 + genre.length);
+      assert.deepEqual(silentIn(code), [], `${genre} seed ${i}\n${code}`);
     }
   }
 });
@@ -1126,6 +1191,20 @@ test('every variation still parses', () => {
       assert.ok(check.ok, `seed ${seed} "${v.title}": ${check.error}\n${v.code}`);
     }
   }
+});
+
+test('"Start on the second chord" rotates whole chords', () => {
+  let chordsRotated = 0;
+  for (let seed = 0; seed < 300; seed++) {
+    for (const v of buildHeuristicVariations(TECHNO, '', 4, seed)) {
+      if (v.title !== 'Start on the second chord') continue;
+      const bass = v.code.includes('<c2 eb2 g2 c2>');
+      const chords = v.code.includes('<[ab2 c3 eb3] [c3 eb3 g3]>');
+      assert.ok(bass || chords, `seed ${seed}: not a rotation\n${v.code}`);
+      if (chords) chordsRotated++;
+    }
+  }
+  assert.ok(chordsRotated > 0, 'the chord layer was never rotated');
 });
 
 test('most variations are TINY — one layer, one parameter', () => {

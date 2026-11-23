@@ -7,6 +7,7 @@
 import { TriggeredNote } from '../types';
 import { isDrumName } from '../audio/vocabulary';
 import { validatePattern, warmUpValidator } from '../audio/validate';
+import { resolveAlternations } from '../audio/miniNotation';
 import { log as dlog, warn as dwarn, event as devent, error as derror } from '../ai/diagnostics';
 
 export interface EvalEvent {
@@ -716,23 +717,29 @@ class StrudelAudioEngine {
 
     for (const layer of layers) {
       for (const stream of this.splitTopLevelCommas(layer.pattern)) {
-        let events: ResolvedEvent[];
-        try {
-          events = this.expandTokensToEvents(
-            this.tokenizeMiniNotation(stream.trim(), 0),
-            0,
-            1,
-            true,
-          );
-        } catch {
-          // A malformed stream is the validator's problem, not this audit's.
-          continue;
-        }
-        for (const ev of events) {
-          const item = ev.item.trim().toLowerCase();
-          if (!item || item === '~' || item === '_') continue;
-          const playable = isDrumName(item) || this.noteToFrequency(item) !== null;
-          if (!playable) silent.add(ev.item.trim());
+        // Several cycles, not just the first: an alternation plays one option
+        // per cycle, so `<c3 rhodes>` only reaches "rhodes" on cycle 1. Sixteen
+        // covers every option of any alternation the composer or a model
+        // writes, including one nested four-deep in another.
+        for (let cycle = 0; cycle < 16; cycle++) {
+          let events: ResolvedEvent[];
+          try {
+            events = this.expandTokensToEvents(
+              this.tokenizeMiniNotation(stream.trim(), cycle),
+              0,
+              1,
+              true,
+            );
+          } catch {
+            // A malformed stream is the validator's problem, not this audit's.
+            break;
+          }
+          for (const ev of events) {
+            const item = ev.item.trim().toLowerCase();
+            if (!item || item === '~' || item === '_') continue;
+            const playable = isDrumName(item) || this.noteToFrequency(item) !== null;
+            if (!playable) silent.add(ev.item.trim());
+          }
         }
       }
     }
@@ -783,11 +790,7 @@ class StrudelAudioEngine {
 
   private tokenizeMiniNotation(str: string, cycle: number): string[] {
     // Handle cycle alternations <a b c>
-    let processed = str.replace(/<([^>]+)>/g, (_, inner) => {
-      const options = inner.trim().split(/\s+/);
-      const idx = cycle % options.length;
-      return options[idx] || options[0];
-    });
+    let processed = resolveAlternations(str, cycle);
 
     // Handle euclidean rhythm like "bd(3,8)" or "hh(5,8)"
     processed = processed.replace(/([a-zA-Z0-9_~]+)\((\d+)\s*,\s*(\d+)\)/g, (_, sound, kStr, nStr) => {
@@ -899,28 +902,26 @@ class StrudelAudioEngine {
         continue;
       }
 
-      // Multiplier bd*4
-      if (token.includes('*')) {
-        const parts = token.split('*');
-        const item = parts[0];
+      // Multiplier bd*4, and [hh oh]*4. Split at the LAST `*` and expand each
+      // repeat as a token of its own: passing the item through unexpanded
+      // made `[hh oh]` one unplayable "sound", so the group never played.
+      const star = token.lastIndexOf('*');
+      if (star >= 0) {
+        const item = token.slice(0, star);
         // Clamped for the same reason as the Euclid arguments: this count
         // comes straight from generated mini-notation and drives an
         // allocation on the audio path. `bd*0` used to become `bd*2`, because
         // 0 is falsy.
-        const parsedCount = parseInt(parts[1], 10);
+        const parsedCount = parseInt(token.slice(star + 1), 10);
         const count = Number.isFinite(parsedCount)
           ? Math.max(0, Math.min(64, parsedCount))
           : 2;
         if (count === 0) continue;
         const subDuration = slotDuration / count;
         for (let j = 0; j < count; j++) {
-          if (item !== '~') {
-            events.push({
-              item,
-              timeOffset: slotStart + j * subDuration,
-              duration: subDuration,
-            });
-          }
+          events.push(
+            ...this.expandTokensToEvents([item], slotStart + j * subDuration, subDuration, includeAll),
+          );
         }
         continue;
       }

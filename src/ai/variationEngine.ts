@@ -29,6 +29,7 @@ import { splitTopLevelArgs } from './sanitizeCode';
 import { makeRng, pick, randInt, type Rng } from './musicTheory';
 import { validateStructure } from '../audio/validate';
 import { DRUM_VOICES } from '../audio/vocabulary';
+import { splitTopLevelSpaces } from '../audio/miniNotation';
 
 // ---------------------------------------------------------------------------
 // Layer plumbing
@@ -382,7 +383,7 @@ const MICRO: Transform[] = [
       const i = pick(rng, candidates);
       let rotated = false;
       const layer = p.layers[i].replace(/<([^>]+)>/, (_m, inner: string) => {
-        const parts = inner.trim().split(/\s+/);
+        const parts = splitTopLevelSpaces(inner);
         if (parts.length < 2) return `<${inner}>`;
         rotated = true;
         return `<${[...parts.slice(1), parts[0]].join(' ')}>`;
